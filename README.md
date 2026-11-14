@@ -163,10 +163,10 @@ Datasets disponíveis (`app/transparencia.py` — adicionar um novo = funções 
 
 Indisponíveis (sem API alcançável — endpoints não respondem): `compras`, `planejamento`.
 
-- **Painel**: seção *Dados abertos* — escolha o dataset, o intervalo de meses e os órgãos (ou todos) e clique *Coletar*
-- **Saída**: UTF-8 com BOM (abre direto no Excel) + MinIO
-  - 1 órgão selecionado → `downloads/<SIGLA>/<dataset>/<recorte>/<arquivo>.csv` (pasta por sigla, como no crawl)
-  - "todos" ou vários órgãos → `downloads/<dataset>/<recorte>/<arquivo>.csv` (o CSV mistura órgãos)
+- **Painel**: seção *Dados abertos* — escolha o dataset, o intervalo e os órgãos (ou todos) e clique *Coletar*
+- **Unidade = um CSV por órgão**: cada órgão selecionado gera um arquivo próprio; "todos" expande para **um CSV por órgão do período**
+- **Saída**: `downloads/<SIGLA>/<dataset>/<recorte>/<dataset>-<recorte>-<SIGLA>.csv` (UTF-8 com BOM) + MinIO — pasta por sigla, igual ao crawl de PDFs
+  - datasets sem órgão ou varredura única (`diarias` com "todos", `transf_voluntarias`) → `downloads/<dataset>/<recorte>/`
 - **Dedup**: cada (dataset × mês × seleção) é um documento — recoletar exige marcar *recoletar*
 - A fonte aparece como `TRANSPARENCIA` (tipo `api`) — não entra nas rodadas de crawl do Beat
 - Tuning: `FOLHA_PAGE_SIZE` (registros/página), `FOLHA_PAGE_DELAY_SECONDS` (pausa entre páginas)

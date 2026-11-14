@@ -89,9 +89,10 @@ def build_recortes(spec: DatasetSpec, ini, fim) -> list[dict]:
     ]
 
 
-def synthetic_url(dataset: str, recorte: dict, orgaos: Optional[list[str]]) -> str:
-    """Chave de dedup do documento gerado (dataset + recorte + selecao)."""
-    sel = "todos" if not orgaos else "-".join(sorted(s.upper() for s in orgaos))
+def synthetic_url(dataset: str, recorte: dict, orgao: Optional[str]) -> str:
+    """Chave de dedup do documento gerado (dataset + recorte + orgao).
+    orgao=None => unico arquivo do recorte (dataset sem orgaos / varredura
+    unica); senao, um documento por orgao."""
     if "mes" in recorte:
         chave = f"{recorte['ano']}/{recorte['mes']:02d}"
     elif "ano" in recorte:
@@ -103,7 +104,15 @@ def synthetic_url(dataset: str, recorte: dict, orgaos: Optional[list[str]]) -> s
         )
     else:
         chave = "snapshot"
-    return f"transparencia://{dataset}/{chave}?orgaos={sel}"
+    sufixo = f"/{orgao}" if orgao else ""
+    return f"transparencia://{dataset}/{chave}{sufixo}"
+
+
+def orgao_slug(label: str) -> str:
+    """Nome de diretorio seguro para a sigla/nome do orgao."""
+    import re
+
+    return re.sub(r"[^A-Z0-9._-]+", "_", str(label).upper()).strip("_")[:50]
 
 
 def recorte_label(recorte: dict) -> str:
@@ -118,14 +127,3 @@ def recorte_label(recorte: dict) -> str:
             f"_a_{recorte['ano_fim']}-{recorte['mes_fim']:02d}"
         )
     return "snapshot"
-
-
-def selection_label(orgaos: Optional[list[str]]) -> str:
-    """Sufixo do nome do arquivo: 'todos', as siglas (ate 3) ou
-    'selecao-Norgaos' quando a lista e grande demais pro nome."""
-    if not orgaos:
-        return "todos"
-    siglas = sorted(s.upper() for s in orgaos)
-    if len(siglas) <= 3:
-        return "-".join(siglas)
-    return f"selecao-{len(siglas)}orgaos"

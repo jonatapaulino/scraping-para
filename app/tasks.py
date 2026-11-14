@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+from typing import Optional
 import re
 import shutil
 import tempfile
@@ -769,15 +770,39 @@ def discover_dataset(self, payload: dict):
     fim = (int(payload["ano_fim"]), int(payload["mes_fim"]))
 
     recortes = transparencia.build_recortes(spec, ini, fim)
+
+    # Unidade = (recorte, orgao). Selecao explicita => 1 doc por orgao.
+    # "todos" => expande para cada orgao do periodo (1 arquivo por sigla).
+    # Excecoes: dataset 'range' com selecao ampla (varredura unica — a API
+    # nao filtra e cada orgao custaria uma varredura completa) e datasets
+    # sem conceito de orgao.
+    sel = [str(s).upper() for s in orgaos] if orgaos else None
+    units: list[tuple[dict, Optional[str]]] = []
+    for recorte in recortes:
+        if spec.granularity == "range" and (not sel or len(sel) != 1):
+            units.append((recorte, None))
+            continue
+        if sel:
+            units += [(recorte, s) for s in sel]
+            continue
+        try:
+            orgs = spec.list_orgaos(recorte.get("ano", ini[0]), recorte.get("mes") or 0)
+        except Exception:
+            orgs = []
+        if orgs:
+            units += [(recorte, g["sigla"]) for g in orgs]
+        else:
+            units.append((recorte, None))
+
     log.info(
-        "Dataset %s job %s: %d recortes (%s) no intervalo %s..%s",
-        dataset, job_id, len(recortes), spec.granularity, ini, fim,
+        "Dataset %s job %s: %d unidades (%s) no intervalo %s..%s",
+        dataset, job_id, len(units), spec.granularity, ini, fim,
     )
 
-    units = []
+    new_units = []
     with SessionLocal() as s:
-        for recorte in recortes:
-            url = transparencia.synthetic_url(dataset, recorte, orgaos)
+        for recorte, orgao in units:
+            url = transparencia.synthetic_url(dataset, recorte, orgao)
             doc_id = s.execute(
                 pg_insert(Documento)
                 .values(
@@ -799,25 +824,25 @@ def discover_dataset(self, payload: dict):
             if doc_id is None:
                 continue
             _inc_pending(s, job_id)
-            units.append((doc_id, recorte))
+            new_units.append((doc_id, recorte, orgao))
 
-        if units:
+        if new_units:
             s.execute(
                 update(ScrapingJob)
                 .where(ScrapingJob.id == job_id)
-                .values(total_pdfs_encontrados=ScrapingJob.total_pdfs_encontrados + len(units))
+                .values(total_pdfs_encontrados=ScrapingJob.total_pdfs_encontrados + len(new_units))
             )
         finish_task_unit(s, job_id)
         s.commit()
 
-        for doc_id, recorte in units:
+        for doc_id, recorte, orgao in new_units:
             _enqueue_compensate(
                 s,
                 job_id,
-                lambda d=doc_id, r=recorte: fetch_dataset_mes.apply_async(
+                lambda d=doc_id, r=recorte, o=orgao: fetch_dataset_mes.apply_async(
                     args=[{
                         "documento_id": str(d), "job_id": str(job_id),
-                        "dataset": dataset, "recorte": r, "orgaos": orgaos,
+                        "dataset": dataset, "recorte": r, "orgao": o,
                     }]
                 ),
                 lambda d=doc_id: s.execute(
@@ -845,7 +870,8 @@ def fetch_dataset_mes(self, payload: dict):
     job_id = uuid.UUID(payload["job_id"])
     documento_id = uuid.UUID(payload["documento_id"])
     recorte = {k: int(v) for k, v in payload.get("recorte", {}).items()}
-    orgaos = payload.get("orgaos")
+    orgao = payload.get("orgao")  # sigla/nome do orgao, ou None (recorte unico)
+    siglas = [orgao] if orgao else None
     rotulo = transparencia.recorte_label(recorte)
 
     with SessionLocal() as s:
@@ -869,7 +895,7 @@ def fetch_dataset_mes(self, payload: dict):
             tmp, encoding="utf-8-sig", newline="", write_through=True
         )
         writer = None
-        for row in spec.iter_rows(recorte, orgaos):
+        for row in spec.iter_rows(recorte, siglas):
             if writer is None:
                 writer = csv.DictWriter(
                     text_tmp, fieldnames=list(row.keys()), extrasaction="ignore"
@@ -916,11 +942,10 @@ def fetch_dataset_mes(self, payload: dict):
                 )
                 return
 
-        label = transparencia.selection_label(orgaos)
-        if orgaos and len(orgaos) == 1:
+        label = orgao or "todos"
+        if orgao:
             # pasta por sigla, igual ao crawl: downloads/SESPA/<dataset>/...
-            slug = re.sub(r"[^A-Z0-9._-]+", "_", str(orgaos[0]).upper()).strip("_")[:50]
-            base = f"{slug}/{dataset}/{rotulo}"
+            base = f"{transparencia.orgao_slug(orgao)}/{dataset}/{rotulo}"
         else:
             base = f"{dataset}/{rotulo}"
         path = (

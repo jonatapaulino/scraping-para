@@ -105,20 +105,3 @@ def resolve_orgaos(ano: int, mes: int, siglas: list[str]) -> dict[str, Optional[
         )
         for s in sorted(wanted)
     }
-
-
-def synthetic_url(ano: int, mes: int, orgaos: Optional[list[str]]) -> str:
-    """Chave de dedup do documento gerado (mes+selecao de siglas)."""
-    sel = "todos" if not orgaos else "-".join(sorted(s.upper() for s in orgaos))
-    return f"transparencia://folha/{ano}/{mes:02d}?orgaos={sel}"
-
-
-def selection_label(orgaos: Optional[list[str]]) -> str:
-    """Sufixo do nome do arquivo: 'todos', as siglas (ate 3) ou
-    'selecao-Norgaos' quando a lista e grande demais pro nome."""
-    if not orgaos:
-        return "todos"
-    siglas = sorted(s.upper() for s in orgaos)
-    if len(siglas) <= 3:
-        return "-".join(siglas)
-    return f"selecao-{len(siglas)}orgaos"
