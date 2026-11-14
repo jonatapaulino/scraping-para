@@ -1,0 +1,10 @@
+downloads/
+secrets/
+testsite/
+.env
+.git/
+__pycache__/
+*.pyc
+*.md
+*.bat
+guia.html

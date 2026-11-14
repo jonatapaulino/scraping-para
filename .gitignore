@@ -1,0 +1,20 @@
+# Segredos — nunca commitar
+.env
+secrets/
+!secrets/.gitkeep
+
+# Dados gerados
+downloads/
+*.pdf
+!testsite/*.pdf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# SO/IDE
+Thumbs.db
+.vscode/
+.idea/

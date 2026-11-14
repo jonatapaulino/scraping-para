@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scraper Gov-PA — Painel</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">⬡</span>
+    <h1>Scraper <b>Gov-PA</b></h1>
+  </div>
+  <div class="header-right">
+    <span id="api-status" class="pill off">API offline</span>
+    <label class="autorefresh"><input type="checkbox" id="autorefresh" checked> auto-refresh 5s</label>
+  </div>
+</header>
+
+<main>
+  <section class="cards" id="overview-cards">
+    <div class="card"><span class="card-label">Fila Discovery</span><span class="card-value" id="q-discovery">–</span></div>
+    <div class="card"><span class="card-label">Fila Download</span><span class="card-value" id="q-download">–</span></div>
+    <div class="card warn"><span class="card-label">Dead Letters</span><span class="card-value" id="q-dead">–</span><button id="btn-requeue" class="mini" title="Republica as dead letters na fila original">reprocessar</button></div>
+    <div class="card"><span class="card-label">PDFs baixados</span><span class="card-value" id="docs-ok">–</span></div>
+    <div class="card"><span class="card-label">Falhas</span><span class="card-value" id="docs-fail">–</span></div>
+    <div class="card"><span class="card-label">Últimas 24h</span><span class="card-value small" id="docs-24h">–</span></div>
+    <div class="card"><span class="card-label">Jobs rodando</span><span class="card-value" id="jobs-running">–</span></div>
+  </section>
+
+  <section class="panel">
+    <h2>▶ Iniciar raspagem</h2>
+    <div class="start-form">
+      <div id="secretaria-checks" class="checks">carregando…</div>
+      <div class="start-actions">
+        <label title="Ignora páginas já visitadas e reprocessa tudo do zero"><input type="checkbox" id="force"> forçar raspagem completa</label>
+        <label title="Vazio = usa a profundidade cadastrada na secretaria (ou o padrão do sistema)">profundidade: <input type="number" id="max-depth" placeholder="padrão" min="0" max="10" style="width:70px"></label>
+        <button id="btn-start" class="primary">Disparar job</button>
+      </div>
+    </div>
+    <div id="start-result" class="result"></div>
+  </section>
+
+  <section class="panel">
+    <h2>▤ Dados abertos — transparência</h2>
+    <div class="start-form">
+      <div class="folha-periodo">
+        <label>dataset: <select id="folha-dataset">
+          <option value="folha">folha de pagamento</option>
+          <option value="despesas">despesas (execução orçamentária)</option>
+          <option value="empenhos">notas de empenho</option>
+          <option value="receitas">receitas públicas</option>
+          <option value="diarias">diárias de viagem</option>
+          <option value="transf_recursos">transferência de recursos</option>
+          <option value="suprimento">suprimento de fundos</option>
+          <option value="obras">obras públicas</option>
+          <option value="areas">áreas temáticas</option>
+          <option value="bens_moveis">bens móveis (patrimônio)</option>
+          <option value="bens_imoveis">bens imóveis (inventário)</option>
+          <option value="transf_voluntarias">convênios (instrumentos)</option>
+        </select></label>
+        <label>de: <select id="folha-de"></select></label>
+        <label>até: <select id="folha-ate"></select></label>
+        <label title="Baixa de novo mesmo se já coletado"><input type="checkbox" id="folha-force"> recoletar</label>
+      </div>
+      <div class="folha-orgaos">
+        <label><input type="checkbox" id="folha-todos" checked> <b>todos os órgãos</b></label>
+        <details id="folha-orgaos-box">
+          <summary>ou selecione órgãos específicos</summary>
+          <div id="folha-orgaos-checks" class="checks">carregando…</div>
+        </details>
+      </div>
+      <div class="start-actions">
+        <button id="btn-folha" class="primary">Coletar</button>
+        <span class="hint">gera um CSV por mês em downloads/&lt;dataset&gt;/&lt;ano&gt;/&lt;mês&gt;/</span>
+      </div>
+    </div>
+    <div id="folha-result" class="result"></div>
+  </section>
+
+  <div class="grid-2">
+    <section class="panel">
+      <h2>Jobs recentes</h2>
+      <table>
+        <thead><tr><th>Job</th><th>Secretaria</th><th>Status</th><th>PDFs</th><th>OK</th><th>Falhas</th><th>Início</th></tr></thead>
+        <tbody id="jobs-tbody"><tr><td colspan="7" class="empty">carregando…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Secretarias</h2>
+      <table>
+        <thead><tr><th>Sigla</th><th>URL base</th><th>Depth</th><th>Ativa</th><th>Ações</th><th>Tipo</th></tr></thead>
+        <tbody id="secs-tbody"><tr><td colspan="6" class="empty">carregando…</td></tr></tbody>
+      </table>
+      <form id="sec-form" class="inline-form">
+        <input id="sec-sigla" placeholder="SIGLA" maxlength="20" required>
+        <input id="sec-url" placeholder="https://portal.pa.gov.br/..." maxlength="255" required>
+        <button class="primary">+ Adicionar</button>
+      </form>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Documentos</h2>
+      <div class="filters">
+        <select id="f-sec"><option value="">Todas secretarias</option></select>
+        <select id="f-status">
+          <option value="">Todos status</option>
+          <option>SUCCESS</option><option>PENDING</option><option>FAILED</option>
+        </select>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th>URL</th><th>Status</th><th>Magic ✓</th><th>Tamanho</th><th>SHA-256</th><th>MinIO</th><th>Criado</th></tr></thead>
+      <tbody id="docs-tbody"><tr><td colspan="7" class="empty">carregando…</td></tr></tbody>
+    </table>
+    <div class="pagination">
+      <button id="pg-prev">‹ anterior</button>
+      <span id="pg-info">–</span>
+      <button id="pg-next">próxima ›</button>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
