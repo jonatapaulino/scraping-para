@@ -445,3 +445,41 @@ def transf_vol_iter(recorte, siglas):
         size=500,  # a API responde vazio acima de ~500
         delay=config.FOLHA_PAGE_DELAY_SECONDS,
     )
+
+
+def transf_vol_docs(recorte, siglas):
+    """Documentos dos instrumentos (termo + plano de trabalho) — PDFs por
+    ORGAO CONCEDENTE: cada convenio vai pra pasta da sigla do concedente
+    (ex.: SEINFRA/transf_voluntarias/documentos/010-2017/termo.pdf)."""
+    from app import transparencia
+
+    del recorte
+    alvo = {transparencia.orgao_slug(s) for s in siglas} if siglas else None
+    for row in _paged(
+        f"{TV_BASE}/transferencias-voluntarias/instrumentos",
+        size=500,
+        delay=config.FOLHA_PAGE_DELAY_SECONDS,
+    ):
+        concedente = row.get("nomeConcedente")
+        if not concedente:
+            continue
+        slug = transparencia.orgao_slug(concedente)
+        if alvo and slug not in alvo:
+            continue
+        numero = transparencia.orgao_slug(str(row.get("numeroAno") or row.get("idinstrumento")))
+        for tipo, campo in (
+            ("termo", "documentoTermoInstrumentoS3ID"),
+            ("plano_trabalho", "documentoPlanoTrabalhoS3ID"),
+        ):
+            s3id = row.get(campo)
+            if not s3id:
+                continue
+            yield {
+                "url": (
+                    f"{TV_BASE}/transferencias-voluntarias/instrumentos/"
+                    f"documentos/{s3id}/pdf"
+                ),
+                "orgao": slug,
+                "sub": numero,
+                "nome": f"{tipo}.pdf",
+            }

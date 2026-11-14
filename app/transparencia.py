@@ -31,6 +31,8 @@ class DatasetSpec:
     list_periods: Callable[[], list[dict]]
     list_orgaos: Callable[[int, int], list[dict]]
     iter_rows: Callable[[dict, Optional[list[str]]], Iterator[dict]]
+    # datasets que tambem publicam documentos PDF por orgao
+    iter_docs: Optional[Callable[[dict, Optional[list[str]]], Iterator[dict]]] = None
 
 
 def _mes_iters(iter_ano_mes):
@@ -62,7 +64,7 @@ DATASETS: dict[str, DatasetSpec] = {
     "bens_imoveis": DatasetSpec("bens_imoveis", "snapshot", lambda: [],
                                 datasets.bens_imoveis_orgaos, datasets.bens_imoveis_iter),
     "transf_voluntarias": DatasetSpec("transf_voluntarias", "snapshot", lambda: [], lambda a, m: [],
-                                      datasets.transf_vol_iter),
+                                      datasets.transf_vol_iter, datasets.transf_vol_docs),
 }
 
 

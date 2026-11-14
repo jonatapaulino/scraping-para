@@ -317,6 +317,41 @@ def _fallback_url(url: str, base_url: str | None) -> str | None:
     return parsed._replace(scheme=base.scheme or parsed.scheme, netloc=base.netloc).geturl()
 
 
+def _baixa_doc_pdf(dataset: str, doc: dict, seen: Optional[dict] = None) -> bool:
+    """Baixa um PDF de anexo do dataset -> local + MinIO.
+    doc: {'url', 'orgao', 'sub', 'nome'}. Pula se o arquivo ja existe ou
+    se o conteudo ja foi gravado na mesma pasta (docs duplicados — ex.:
+    termo e plano de trabalho apontando pro mesmo binario)."""
+    pasta = f"{doc['orgao']}/{dataset}/documentos/{doc.get('sub') or '_avulso'}"
+    rel = f"{pasta}/{doc['nome']}"
+    local = os.path.join(config.LOCAL_EXPORT_DIR, rel) if config.LOCAL_EXPORT_DIR else None
+    if local and os.path.exists(local):
+        return False
+    with http_client.new_client() as c:
+        resp = c.get(doc["url"])
+        resp.raise_for_status()
+        body = resp.content
+    if not body.startswith(b"%PDF-"):
+        log.warning("Doc %s nao e PDF (magic bytes) — ignorado", doc["url"])
+        return False
+    if seen is not None:
+        sha = hashlib.sha256(body).hexdigest()
+        hashes = seen.setdefault(pasta, set())
+        if sha in hashes:
+            return False
+        hashes.add(sha)
+    minio = storage.ensure_bucket()
+    minio.put_object(
+        config.MINIO_BUCKET, rel, io.BytesIO(body),
+        length=len(body), content_type="application/pdf",
+    )
+    if local:
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        with open(local, "wb") as f:
+            f.write(body)
+    return True
+
+
 def _export_local(tmp, minio_path: str) -> None:
     """Espelha o objeto (bucket/path no estilo 'raw-docs/a/b.csv') no host."""
     dst = os.path.join(config.LOCAL_EXPORT_DIR, minio_path.split("/", 1)[1])
@@ -873,6 +908,20 @@ def fetch_dataset_mes(self, payload: dict):
     orgao = payload.get("orgao")  # sigla/nome do orgao, ou None (recorte unico)
     siglas = [orgao] if orgao else None
     rotulo = transparencia.recorte_label(recorte)
+
+    # Documentos PDF por orgao (datasets que publicam anexos — ex.:
+    # termo/plano de trabalho dos convenios). Independe do dedup do CSV —
+    # roda antes, pois cada doc vai pra <SIGLA>/<dataset>/documentos/.
+    if spec.iter_docs:
+        n_ok, seen = 0, {}
+        for d in spec.iter_docs(recorte, siglas):
+            try:
+                if _baixa_doc_pdf(dataset, d, seen):
+                    n_ok += 1
+            except Exception:
+                log.exception("Doc %s falhou", d.get("url"))
+            time.sleep(config.DOWNLOAD_DELAY_SECONDS)
+        log.info("%s %s: %d documentos baixados", dataset, rotulo, n_ok)
 
     with SessionLocal() as s:
         doc = s.get(Documento, documento_id)
