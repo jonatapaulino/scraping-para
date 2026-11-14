@@ -283,6 +283,19 @@ def transparencia_start(req: FolhaStartRequest, s: Session = Depends(get_session
     """Dispara a coleta de um dataset na API da transparencia.
 
     Cada mes do intervalo vira um CSV em downloads/<dataset>/<ano>/<mes>/."""
+    if req.dataset == "*":
+        # um job por dataset, mesmo periodo/orgaos — cada dataset resolve
+        # a granularidade e as siglas proprias no discover
+        if (req.ano_ini, req.mes_ini) > (req.ano_fim, req.mes_fim):
+            raise HTTPException(400, "Periodo inicial maior que o final")
+        jobs = [
+            start_dataset_job(
+                s, slug, req.ano_ini, req.mes_ini, req.ano_fim, req.mes_fim,
+                req.orgaos or None, req.force,
+            )
+            for slug in transparencia.DATASETS
+        ]
+        return {"job_ids": [str(j.id) for j in jobs]}
     if transparencia.get_spec(req.dataset) is None:
         raise HTTPException(
             400, f"Dataset '{req.dataset}' desconhecido — {sorted(transparencia.DATASETS)}"

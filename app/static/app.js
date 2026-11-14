@@ -193,7 +193,10 @@ $("btn-start").addEventListener("click", async () => {
 
 async function loadFolhaOpcoes() {
   try {
-    const o = await api(`/transparencia/opcoes?dataset=${$("folha-dataset").value}`);
+    const ds = $("folha-dataset").value;
+    // "*" (todos os datasets): usa as opcoes da folha so como referencia
+    // de periodo/orgaos — cada dataset resolve os proprios no backend
+    const o = await api(`/transparencia/opcoes?dataset=${ds === "*" ? "folha" : ds}`);
     const snapshot = o.periodos.length === 0;
     const opts = o.periodos
       .map((p) => {
@@ -254,8 +257,13 @@ $("btn-folha").addEventListener("click", async () => {
         orgaos, force: $("folha-force").checked,
       }),
     });
-    $("folha-result").textContent = "job: " + r.job_id;
-    toast("Coleta da folha disparada");
+    if (r.job_ids) {
+      $("folha-result").textContent = `${r.job_ids.length} jobs disparados (1 por dataset)`;
+      toast(`${r.job_ids.length} coletas disparadas`);
+    } else {
+      $("folha-result").textContent = "job: " + r.job_id;
+      toast("Coleta disparada");
+    }
     loadJobs();
     loadOverview();
   } catch (err) {

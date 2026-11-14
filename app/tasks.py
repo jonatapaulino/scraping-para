@@ -818,7 +818,20 @@ def discover_dataset(self, payload: dict):
             units.append((recorte, None))
             continue
         if sel:
-            units += [(recorte, s) for s in sel]
+            # traduz a selecao pro rotulo do dataset (sigla vs nome oficial)
+            try:
+                mapa = {
+                    transparencia.orgao_slug(g["sigla"]): g["sigla"]
+                    for g in spec.list_orgaos(
+                        recorte.get("ano", ini[0]), recorte.get("mes") or 0
+                    )
+                }
+                labels = [
+                    mapa.get(transparencia.orgao_slug(s), s) for s in sel
+                ]
+            except Exception:
+                labels = sel
+            units += [(recorte, s) for s in labels]
             continue
         try:
             orgs = spec.list_orgaos(recorte.get("ano", ini[0]), recorte.get("mes") or 0)
