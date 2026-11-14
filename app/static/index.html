@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scraper Gov-PA — Painel</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">⬡</span>
+    <h1>Scraper <b>Gov-PA</b></h1>
+  </div>
+  <div class="header-right">
+    <span id="api-status" class="pill off">API offline</span>
+    <label class="autorefresh"><input type="checkbox" id="autorefresh" checked> auto-refresh 5s</label>
+  </div>
+</header>
+
+<main>
+  <section class="cards" id="overview-cards">
+    <div class="card"><span class="card-label">Fila Discovery</span><span class="card-value" id="q-discovery">–</span></div>
+    <div class="card"><span class="card-label">Fila Download</span><span class="card-value" id="q-download">–</span></div>
+    <div class="card warn"><span class="card-label">Dead Letters</span><span class="card-value" id="q-dead">–</span></div>
+    <div class="card"><span class="card-label">PDFs baixados</span><span class="card-value" id="docs-ok">–</span></div>
+    <div class="card"><span class="card-label">Falhas</span><span class="card-value" id="docs-fail">–</span></div>
+    <div class="card"><span class="card-label">Jobs rodando</span><span class="card-value" id="jobs-running">–</span></div>
+  </section>
+
+  <section class="panel">
+    <h2>▶ Iniciar raspagem</h2>
+    <div class="start-form">
+      <div id="secretaria-checks" class="checks">carregando…</div>
+      <div class="start-actions">
+        <label title="Ignora páginas já visitadas e reprocessa tudo do zero"><input type="checkbox" id="force"> forçar raspagem completa</label>
+        <label>profundidade: <input type="number" id="max-depth" value="2" min="0" max="10" style="width:60px"></label>
+        <button id="btn-start" class="primary">Disparar job</button>
+      </div>
+    </div>
+    <div id="start-result" class="result"></div>
+  </section>
+
+  <div class="grid-2">
+    <section class="panel">
+      <h2>Jobs recentes</h2>
+      <table>
+        <thead><tr><th>Job</th><th>Secretaria</th><th>Status</th><th>PDFs</th><th>OK</th><th>Falhas</th><th>Início</th></tr></thead>
+        <tbody id="jobs-tbody"><tr><td colspan="7" class="empty">carregando…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Secretarias</h2>
+      <table>
+        <thead><tr><th>Sigla</th><th>URL base</th><th>Ativa</th></tr></thead>
+        <tbody id="secs-tbody"><tr><td colspan="3" class="empty">carregando…</td></tr></tbody>
+      </table>
+      <form id="sec-form" class="inline-form">
+        <input id="sec-sigla" placeholder="SIGLA" maxlength="20" required>
+        <input id="sec-url" placeholder="https://portal.pa.gov.br/..." maxlength="255" required>
+        <button class="primary">+ Adicionar</button>
+      </form>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Documentos</h2>
+      <div class="filters">
+        <select id="f-sec"><option value="">Todas secretarias</option></select>
+        <select id="f-status">
+          <option value="">Todos status</option>
+          <option>SUCCESS</option><option>PENDING</option><option>FAILED</option>
+        </select>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th>URL</th><th>Status</th><th>Magic ✓</th><th>Tamanho</th><th>SHA-256</th><th>MinIO</th><th>Criado</th></tr></thead>
+      <tbody id="docs-tbody"><tr><td colspan="7" class="empty">carregando…</td></tr></tbody>
+    </table>
+    <div class="pagination">
+      <button id="pg-prev">‹ anterior</button>
+      <span id="pg-info">–</span>
+      <button id="pg-next">próxima ›</button>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

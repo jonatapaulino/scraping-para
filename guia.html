@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<style>
+  body { font-family: "Segoe UI", Arial, sans-serif; color: #1f2937; font-size: 12px; line-height: 1.5; }
+  h1 { color: #1e40af; font-size: 22px; border-bottom: 3px solid #1e40af; padding-bottom: 6px; }
+  h2 { color: #1e40af; font-size: 15px; margin-top: 22px; border-left: 4px solid #1e40af; padding-left: 8px; }
+  h3 { font-size: 12.5px; margin-bottom: 4px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th { background: #1e40af; color: #fff; text-align: left; padding: 6px 8px; font-size: 11px; }
+  td { border: 1px solid #cbd5e1; padding: 5px 8px; font-size: 10.5px; vertical-align: top; }
+  tr:nth-child(even) td { background: #f1f5f9; }
+  .mono { font-family: Consolas, monospace; font-size: 10px; }
+  .box { background: #eff6ff; border: 1px solid #93c5fd; border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
+  .warn { background: #fffbeb; border-color: #fbbf24; }
+  ol li, ul li { margin-bottom: 5px; }
+  code { background: #e2e8f0; padding: 1px 5px; border-radius: 4px; font-family: Consolas, monospace; font-size: 10.5px; }
+  .ok { color: #047857; font-weight: 600; }
+  .bad { color: #b91c1c; font-weight: 600; }
+  .foot { margin-top: 24px; padding-top: 8px; border-top: 1px solid #cbd5e1; color: #64748b; font-size: 9.5px; }
+</style>
+</head>
+<body>
+
+<h1>Scraper Gov-PA — Guia do Usuário</h1>
+<p>Sistema de raspagem distribuída de documentos (PDFs) de portais governamentais do Estado do Pará.
+Você cadastra as secretarias, dispara as raspagens e os arquivos caem automaticamente na pasta
+<code>downloads</code> da sua máquina.</p>
+
+<h2>1. Acessos</h2>
+<table>
+  <tr><th>Serviço</th><th>Endereço</th><th>Login</th><th>Para quê</th></tr>
+  <tr><td><b>Painel</b></td><td class="mono">http://localhost:8000/ui</td><td>—</td><td>Operar o sistema (uso diário)</td></tr>
+  <tr><td>MinIO</td><td class="mono">http://localhost:9001</td><td>minioadmin / minioadmin</td><td>Ver/baixar os arquivos brutos</td></tr>
+  <tr><td>Flower</td><td class="mono">http://localhost:5555</td><td>—</td><td>Monitorar workers/filas</td></tr>
+  <tr><td>RabbitMQ</td><td class="mono">http://localhost:15672</td><td>scraper / scraper</td><td>Inspecionar filas internas</td></tr>
+</table>
+
+<h2>2. Passo a passo</h2>
+<ol>
+  <li><b>Cadastre a secretaria</b> — na seção <i>Secretarias</i>: sigla curta (ex: <code>SEDUC</code>) e a
+      URL base (a página do portal que lista os documentos — pode ser a home, o crawler navega sozinho).</li>
+  <li><b>Dispare o job</b> — em <i>Iniciar raspagem</i>, marque a secretaria, ajuste a
+      <b>profundidade</b> e clique <b>Disparar job</b>. Uma vez só: o job baixa todos os PDFs que encontrar.</li>
+  <li><b>Acompanhe</b> — a tabela <i>Jobs recentes</i> mostra <code>RUNNING</code> (trabalhando) →
+      <code>COMPLETED</code> (fila zerada). Os cards em cima mostram as filas e totais.</li>
+  <li><b>Pegue os arquivos</b> — caem direto em <code>D:\scraper-para\downloads\&lt;sigla&gt;\&lt;ano&gt;\</code>.</li>
+</ol>
+<div class="box"><b>Automático:</b> toda secretaria ativa entra na rodada do agendador (Celery Beat),
+hoje às 6h da manhã (<code>CELERY_BEAT_CRON</code>). Você só clica em Disparar quando quer fora do horário.
+A deduplicação por URL/hash garante que rodadas repetidas só baixem documentos <b>novos</b>.</div>
+
+<h2>3. Secretarias para cadastrar</h2>
+<table>
+  <tr><th>Sigla</th><th>URL base</th><th>PDFs</th><th>Observação</th></tr>
+  <tr><td>SEDUC</td><td class="mono">https://www.seduc.pa.gov.br/portal/editais/editais.php</td><td>~190</td><td>parte dos links quebrados no portal (viram FAILED)</td></tr>
+  <tr><td>PRODEPA</td><td class="mono">https://www.prodepa.pa.gov.br/</td><td>~15</td><td>PDFs direto na home</td></tr>
+  <tr><td>SESPA</td><td class="mono">https://www.saude.pa.gov.br/</td><td>~8</td><td>home + seção /editais/ — use depth 2</td></tr>
+  <tr><td>FAPESPA</td><td class="mono">https://www.fapespa.pa.gov.br/category/editais/</td><td>vários</td><td>documentos dentro dos posts — depth 2</td></tr>
+  <tr><td>SEMAS</td><td class="mono">https://www.semas.pa.gov.br/</td><td>~5</td><td>homepage</td></tr>
+  <tr><td>PGE</td><td class="mono">https://www.pge.pa.gov.br/</td><td>poucos</td><td>depth 2-3 para achar as páginas de documentos</td></tr>
+  <tr><td>DETRAN</td><td class="mono">https://www.detran.pa.gov.br/</td><td>?</td><td>home sem PDF — o discovery navega (depth 3-4)</td></tr>
+  <tr><td>SECTET</td><td class="mono">https://www.sectet.pa.gov.br/</td><td>?</td><td>idem</td></tr>
+  <tr><td>POLCIVIL</td><td class="mono">https://www.policiacivil.pa.gov.br/</td><td>?</td><td>idem</td></tr>
+  <tr><td>CBMPA</td><td class="mono">https://www.bombeiros.pa.gov.br/</td><td>?</td><td>idem</td></tr>
+</table>
+<p style="font-size:10px;color:#64748b">As cinco primeiras foram verificadas com links de PDF reais.
+As marcadas com <b>?</b> guardam documentos dentro de seções/posts — use depth 3-4.</p>
+
+<h2>4. Entendendo a profundidade (depth)</h2>
+<p>É a <b>distância em cliques</b> da página que você cadastrou até a página que contém o link do PDF:</p>
+<ul>
+  <li><b>0</b> — só a página cadastrada</li>
+  <li><b>1</b> — ela + os links que ela tem</li>
+  <li><b>2</b> — + as páginas dentro desses links (um "clique a mais")</li>
+  <li><b>3-4</b> — varredura funda</li>
+</ul>
+<div class="box"><b>Como descobrir a profundidade certa?</b> Abra o portal no navegador e clique manualmente
+até chegar na página que mostra os links de PDF. <b>O número de cliques é a profundidade.</b>
+Ex.: Home → menu "Editais" (1) → post do edital (2) → o PDF está dentro do post = depth 2.
+Na dúvida, comece com <b>2</b>; se o job achar poucos documentos, refaça com <b>3</b> ou <b>4</b>.
+Cuidado: cada nível multiplica o número de páginas visitadas (2s por página).</div>
+
+<h2>5. Lendo os resultados</h2>
+<table>
+  <tr><th>Status</th><th>Significado</th></tr>
+  <tr><td><span class="ok">SUCCESS</span></td><td>PDF válido baixado e salvo (magic bytes %PDF- conferidos)</td></tr>
+  <tr><td>PENDING</td><td>Na fila de download ou aguardando retry</td></tr>
+  <tr><td><span class="bad">FAILED</span></td><td>Falhou — geralmente link quebrado no próprio portal (404) ou arquivo que não é PDF</td></tr>
+  <tr><td>q.dead</td><td>"Cemitério" — itens que esgotaram 5 tentativas com backoff; revisão manual</td></tr>
+</table>
+<div class="box warn"><b>Dicas:</b> clicar várias vezes em "Disparar" só cria jobs duplicados que terminam
+vazios — não quebra nada, mas evite. Se muitos <code>FAILED</code> aparecerem, provavelmente o portal tem
+links desatualizados (comum). Se o job ficar <code>RUNNING</code> parado, veja a fila <code>q.discovery</code>:
+pode ser backlog de outro job ainda processando.</div>
+
+<div class="foot">Scraper Gov-PA · FastAPI + Celery + RabbitMQ + PostgreSQL + MinIO + Browserless · gerado pelo painel de arquitetura</div>
+
+</body>
+</html>

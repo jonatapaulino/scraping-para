@@ -1,0 +1,40 @@
+ Pronto — criei dois arquivos em  D:\scraper-para\ :
+
+ ┌──────────────┬─────────────────────────────────────────────────────────────────────┐
+ │ Arquivo      │ O que faz                                                           │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────┤
+ │  iniciar.bat │ Duplo clique → sobe a stack inteira e já abre o painel no navegador │
+ │              │                                                                     │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────┤
+ │  parar.bat   │ Duplo clique → para tudo (dados e PDFs ficam salvos nos volumes)    │
+ └──────────────┴─────────────────────────────────────────────────────────────────────┘
+
+ Já testei o  iniciar.bat  — funciona e o sistema está no ar agora. Único pré-
+ requisito: o Docker Desktop precisa estar aberto antes de rodar.
+
+ Fluxo do seu dia a dia:
+
+   1. Abre o Docker Desktop
+   2. Duplo clique em  iniciar.bat  → painel abre sozinho
+   3. Usa normalmente
+   4.  parar.bat  quando quiser desligar (ou simplesmente fecha — se o PC reiniciar,
+   roda o  iniciar.bat  de novo)
+
+--------------------------------------------------------------------------------------------------------------------
+
+Pode fechar — os containers rodam no Docker Desktop, não dependem desta janela. Quando
+ voltar: abre o Docker Desktop e roda  iniciar.bat .
+
+ Sobre escalável — já é: os workers são stateless e escalam na hora, ex.:
+
+
+
+   docker compose up -d --scale worker-discovery=4 --scale worker-download=8
+
+
+ (mais discovery = drena fila de páginas mais rápido; mais download = mais PDFs em
+ paralelo — lembrando do delay de 2s por worker, que é educação com o servidor, não
+ gargalo).
+
+ Estado atual: sistema zerado, 9 containers up, PDFs caindo em  D:\scraper-para\downloa
+ ds\ . Pode fechar e começar a usar pelo painel.

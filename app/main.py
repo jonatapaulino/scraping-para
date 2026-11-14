@@ -1,0 +1,73 @@
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import pika
+from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi_pagination import add_pagination
+
+from app import broker, config, json_logging
+from app.database import SessionLocal, init_db
+from app.models import Secretaria
+from app.routers import router
+
+json_logging.setup()
+log = logging.getLogger(__name__)
+
+
+def seed_secretarias() -> None:
+    """Semeia secretarias a partir de SEED_SECRETARIAS (SIGLA=url;SIGLA2=url2)."""
+    pairs = [p.strip() for p in config.SEED_SECRETARIAS.split(";") if "=" in p]
+    if not pairs:
+        return
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    with SessionLocal() as s:
+        for pair in pairs:
+            sigla, _, url = pair.partition("=")
+            s.execute(
+                pg_insert(Secretaria)
+                .values(sigla=sigla.strip().upper(), url_base=url.strip())
+                .on_conflict_do_nothing(index_elements=["sigla"])
+            )
+        s.commit()
+        log.info("Seed: %d secretarias registradas", len(pairs))
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    seed_secretarias()
+    try:
+        conn = broker._connect()
+        broker.declare_topology(conn.channel())
+        conn.close()
+    except pika.exceptions.AMQPError:
+        log.warning("RabbitMQ indisponivel no startup — DLX sera declarada sob demanda")
+    yield
+
+
+app = FastAPI(title="Scraper Gov-PA", version="2.0.0", lifespan=lifespan)
+app.include_router(router)
+add_pagination(app)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse("/ui/")
+
+
+app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="ui")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000)
