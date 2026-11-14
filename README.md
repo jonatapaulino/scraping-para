@@ -41,6 +41,11 @@ Você cadastra secretarias, dispara raspagens (manual ou agendada) e os PDFs cae
 
 Pré-requisito: Docker Desktop rodando.
 
+```bash
+git clone https://github.com/jonatapaulino/scraping-para.git
+cd scraping-para
+```
+
 **Windows:** duplo clique em `iniciar.bat` (cria `.env` do exemplo se faltar, sobe tudo e abre o painel). `parar.bat` desliga.
 
 **Manual:**
