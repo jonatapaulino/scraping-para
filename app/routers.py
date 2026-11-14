@@ -267,6 +267,9 @@ def transparencia_opcoes(
         orgaos = spec.list_orgaos(ano, mes)
     else:
         orgaos = []
+        if not periodos:
+            # datasets snapshot: sem periodo — orgaos independem de competencia
+            orgaos = spec.list_orgaos(0, 0)
         for p in reversed(periodos[-6:]):
             orgaos = spec.list_orgaos(p["ano"], p.get("mes") or 0)
             if orgaos:

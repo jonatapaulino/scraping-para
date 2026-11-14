@@ -438,13 +438,44 @@ def bens_imoveis_iter(recorte, siglas):
 TV_BASE = config.TRANSF_VOL_API_BASE
 
 
+def transf_vol_orgaos(ano, mes):
+    """Orgaos concedentes dos convenios — derivado dos proprios
+    instrumentos (a API nao tem lista de orgaos dedicada)."""
+    from app import transparencia
+
+    def _get():
+        out = {}
+        for row in _paged(
+            f"{TV_BASE}/transferencias-voluntarias/instrumentos",
+            size=500,
+        ):
+            nome = row.get("nomeConcedente")
+            if nome:
+                out[transparencia.orgao_slug(nome)] = nome
+        return [{"sigla": s, "orgao": n} for s, n in sorted(out.items())]
+
+    return _cached("tv:orgaos", _get)
+
+
+def _tv_match(siglas):
+    """Set de siglas canonicas selecionadas, ou None (todos)."""
+    from app import transparencia
+
+    return {transparencia.orgao_slug(s) for s in siglas} if siglas else None
+
+
 def transf_vol_iter(recorte, siglas):
-    del siglas  # sem filtro de orgao
-    yield from _paged(
+    del recorte
+    alvo = _tv_match(siglas)
+    from app import transparencia
+
+    for row in _paged(
         f"{TV_BASE}/transferencias-voluntarias/instrumentos",
         size=500,  # a API responde vazio acima de ~500
         delay=config.FOLHA_PAGE_DELAY_SECONDS,
-    )
+    ):
+        if alvo is None or transparencia.orgao_slug(row.get("nomeConcedente") or "") in alvo:
+            yield row
 
 
 def transf_vol_docs(recorte, siglas):
@@ -454,7 +485,7 @@ def transf_vol_docs(recorte, siglas):
     from app import transparencia
 
     del recorte
-    alvo = {transparencia.orgao_slug(s) for s in siglas} if siglas else None
+    alvo = _tv_match(siglas)
     for row in _paged(
         f"{TV_BASE}/transferencias-voluntarias/instrumentos",
         size=500,
