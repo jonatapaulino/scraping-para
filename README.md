@@ -164,7 +164,9 @@ Datasets disponíveis (`app/transparencia.py` — adicionar um novo = funções 
 Indisponíveis (sem API alcançável — endpoints não respondem): `compras`, `planejamento`.
 
 - **Painel**: seção *Dados abertos* — escolha o dataset, o intervalo de meses e os órgãos (ou todos) e clique *Coletar*
-- **Saída**: `downloads/<dataset>/<ano>/<mes>/<dataset>-<ano>-<mes>-<orgaos>.csv` (UTF-8 com BOM, abre direto no Excel) + MinIO
+- **Saída**: UTF-8 com BOM (abre direto no Excel) + MinIO
+  - 1 órgão selecionado → `downloads/<SIGLA>/<dataset>/<recorte>/<arquivo>.csv` (pasta por sigla, como no crawl)
+  - "todos" ou vários órgãos → `downloads/<dataset>/<recorte>/<arquivo>.csv` (o CSV mistura órgãos)
 - **Dedup**: cada (dataset × mês × seleção) é um documento — recoletar exige marcar *recoletar*
 - A fonte aparece como `TRANSPARENCIA` (tipo `api`) — não entra nas rodadas de crawl do Beat
 - Tuning: `FOLHA_PAGE_SIZE` (registros/página), `FOLHA_PAGE_DELAY_SECONDS` (pausa entre páginas)

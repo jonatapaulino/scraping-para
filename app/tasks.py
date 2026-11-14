@@ -917,8 +917,14 @@ def fetch_dataset_mes(self, payload: dict):
                 return
 
         label = transparencia.selection_label(orgaos)
+        if orgaos and len(orgaos) == 1:
+            # pasta por sigla, igual ao crawl: downloads/SESPA/<dataset>/...
+            slug = re.sub(r"[^A-Z0-9._-]+", "_", str(orgaos[0]).upper()).strip("_")[:50]
+            base = f"{slug}/{dataset}/{rotulo}"
+        else:
+            base = f"{dataset}/{rotulo}"
         path = (
-            f"{config.MINIO_BUCKET}/{dataset}/{rotulo}/"
+            f"{config.MINIO_BUCKET}/{base}/"
             f"{dataset}-{rotulo}-{label}.csv"
         )
         minio = storage.ensure_bucket()
