@@ -1,5 +1,9 @@
 @echo off
 cd /d %~dp0
+if not exist .env (
+  echo .env nao encontrado - copiando .env.example...
+  copy .env.example .env >nul
+)
 echo ==========================================
 echo   Scraper Gov-PA - subindo o sistema
 echo ==========================================

@@ -41,7 +41,7 @@ Você cadastra secretarias, dispara raspagens (manual ou agendada) e os PDFs cae
 
 Pré-requisito: Docker Desktop rodando.
 
-**Windows:** duplo clique em `iniciar.bat` (sobe tudo e abre o painel). `parar.bat` desliga.
+**Windows:** duplo clique em `iniciar.bat` (cria `.env` do exemplo se faltar, sobe tudo e abre o painel). `parar.bat` desliga.
 
 **Manual:**
 
