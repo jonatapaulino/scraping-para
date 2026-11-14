@@ -942,10 +942,11 @@ def fetch_dataset_mes(self, payload: dict):
                 )
                 return
 
-        label = orgao or "todos"
+        slug = transparencia.orgao_slug(orgao) if orgao else None
+        label = slug or "todos"
         if orgao:
-            # pasta por sigla, igual ao crawl: downloads/SESPA/<dataset>/...
-            base = f"{transparencia.orgao_slug(orgao)}/{dataset}/{rotulo}"
+            # pasta por sigla canonica, igual ao crawl: downloads/SESPA/<dataset>/...
+            base = f"{slug}/{dataset}/{rotulo}"
         else:
             base = f"{dataset}/{rotulo}"
         path = (

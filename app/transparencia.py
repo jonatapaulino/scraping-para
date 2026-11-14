@@ -16,7 +16,9 @@ recorte carregado ate o fetch: {"ano","mes"} | {"ano"} |
 Sigla (ou nome, conforme o dataset) e a chave estavel de filtro de orgao —
 ids mudam por competencia e por API."""
 
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable, Iterator, Optional
 
 from app import datasets, despesas, folha
@@ -108,11 +110,65 @@ def synthetic_url(dataset: str, recorte: dict, orgao: Optional[str]) -> str:
     return f"transparencia://{dataset}/{chave}{sufixo}"
 
 
-def orgao_slug(label: str) -> str:
-    """Nome de diretorio seguro para a sigla/nome do orgao."""
-    import re
+def _norm(txt: str) -> str:
+    """Normaliza para comparacao de nomes entre APIs (sem acento/case/espaco)."""
+    import unicodedata
 
-    return re.sub(r"[^A-Z0-9._-]+", "_", str(label).upper()).strip("_")[:50]
+    return re.sub(
+        r"\s+", " ",
+        "".join(
+            c for c in unicodedata.normalize("NFKD", str(txt).upper())
+            if not unicodedata.combining(c)
+        ),
+    ).strip()
+
+
+def _build_sigla_canon() -> dict:
+    """nome-oficial -> sigla, da lista de orgaos das despesas/empenhos —
+    o campo 'orgao' vem como 'NOME OFICIAL-SIGLA' e e o unico que expoe
+    o par (nome oficial + sigla) igual ao dos outros datasets."""
+    import httpx
+
+    from app import config
+
+    out = {}
+    for base in (
+        f"{config.DESPESAS_API_BASE}/orgaos/atualizado",
+        f"{config.EMPENHOS_API_BASE}/filtros/orgaos-empenho",
+    ):
+        try:
+            data = httpx.get(base, params={"ano": datetime.now().year}, timeout=20).json()
+            rows = data.get("data", data) if isinstance(data, dict) else data
+        except Exception:
+            continue
+        for g in rows:
+            sigla = g.get("sigla")
+            if not sigla:
+                continue
+            out[_norm(sigla)] = sigla
+            nome = g.get("orgao") or ""
+            if "-" in nome:
+                nome = nome.rsplit("-", 1)[0]  # 'NOME OFICIAL-SIGLA' -> nome
+            if nome.strip():
+                out[_norm(nome)] = sigla
+        if out:
+            return out
+    return out
+
+
+def _sigla_canon() -> dict:
+    """Mapa cacheado por processo de nome-oficial/sigla -> sigla canonica."""
+    return folha._cached("canon:siglas", _build_sigla_canon)
+
+
+def orgao_slug(label: str) -> str:
+    """Nome de diretorio do orgao: sigla canonica quando conhecida
+    (ex.: 'Secretaria de Estado de Saúde Pública' -> 'SESPA'); senao,
+    slug seguro do proprio rotulo."""
+    canon = _sigla_canon()
+    return canon.get(_norm(label)) or re.sub(
+        r"[^A-Z0-9._-]+", "_", str(label).upper()
+    ).strip("_")[:50]
 
 
 def recorte_label(recorte: dict) -> str:
