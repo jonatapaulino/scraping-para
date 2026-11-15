@@ -48,6 +48,14 @@ MAX_RETRIES = _int("MAX_RETRIES", 5)
 RETRY_BASE_SECONDS = _int("RETRY_BASE_SECONDS", 120)
 DISCOVERY_DELAY_SECONDS = _int("DISCOVERY_DELAY_SECONDS", 2)
 DOWNLOAD_DELAY_SECONDS = _int("DOWNLOAD_DELAY_SECONDS", 2)
+# Whitelist regex p/ PDFs do crawl de portais — só material financeiro/
+# contratual (editais, contratos, convenios, atas...); vazio = baixa tudo
+CRAWL_PDF_ALLOW = os.getenv(
+    "CRAWL_PDF_ALLOW",
+    r"edital|contrato|conv.?nio|preg.?o|chamamento|credenciamento|dispensa"
+    r"|inexigibilidade|licita|ata.?de.?registro|aditivo|termo.?de"
+    r"|ordem.?bancaria|nota.?de.?empenho|empenho|reajuste",
+)
 DISCOVERY_MAX_DEPTH = _int("DISCOVERY_MAX_DEPTH", 2)
 HTTP_TIMEOUT_SECONDS = _int("HTTP_TIMEOUT_SECONDS", 30)
 RENDER_FALLBACK = os.getenv("RENDER_FALLBACK", "true").lower() == "true"

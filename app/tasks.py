@@ -272,11 +272,20 @@ def extract_links(page_url: str, html: str) -> tuple[list[str], list[str]]:
             continue
         abs_url = normalize_url(abs_url)
         # .pdf no path OU na query (ex: arquivo.php?arq=/doc.pdf) — magic bytes valida falso-positivo
-        if ".pdf" in abs_url.lower():
+        if ".pdf" in abs_url.lower() and _pdf_allow(abs_url):
             docs.append(abs_url)
         elif urlparse(abs_url).netloc == base_netloc:
             pages.append(abs_url)
     return docs, pages
+
+
+def _pdf_allow(url: str) -> bool:
+    """Whitelist do crawl: so PDF cujo nome/URL parece material financeiro
+    (CRAWL_PDF_ALLOW; vazio = baixa tudo)."""
+    allow = config.CRAWL_PDF_ALLOW
+    if not allow:
+        return True
+    return re.search(allow, unquote(url), re.IGNORECASE) is not None
 
 
 def _filename_from_url(url: str) -> str:
