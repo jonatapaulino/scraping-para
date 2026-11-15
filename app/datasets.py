@@ -478,6 +478,39 @@ def transf_vol_iter(recorte, siglas):
             yield row
 
 
+def _tv_instrumento_sigla():
+    """Mapa idinstrumento -> sigla do concedente (cacheado)."""
+    from app import transparencia
+
+    def _get():
+        out = {}
+        for row in _paged(
+            f"{TV_BASE}/transferencias-voluntarias/instrumentos", size=500
+        ):
+            nome = row.get("nomeConcedente")
+            if row.get("idinstrumento") and nome:
+                out[row["idinstrumento"]] = transparencia.orgao_slug(nome)
+        return out
+
+    return _cached("tv:instr_sigla", _get)
+
+
+def transf_vol_licitacoes(recorte, siglas):
+    """Licitacoes vinculadas aos convenios — sigla via idinstrumento."""
+    del recorte
+    alvo = _tv_match(siglas)
+    mapa = _tv_instrumento_sigla()
+    for row in _paged(
+        f"{TV_BASE}/transferencias-voluntarias/licitacoes",
+        size=500,
+        delay=config.FOLHA_PAGE_DELAY_SECONDS,
+    ):
+        sigla = mapa.get(row.get("idinstrumento"))
+        if sigla is None or (alvo and sigla not in alvo):
+            continue
+        yield {**row, "sigla_orgao": sigla}
+
+
 def transf_vol_docs(recorte, siglas):
     """Documentos dos instrumentos (termo + plano de trabalho) — PDFs por
     ORGAO CONCEDENTE: cada convenio vai pra pasta da sigla do concedente

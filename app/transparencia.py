@@ -66,6 +66,9 @@ DATASETS: dict[str, DatasetSpec] = {
     "transf_voluntarias": DatasetSpec("transf_voluntarias", "snapshot", lambda: [],
                                       datasets.transf_vol_orgaos, datasets.transf_vol_iter,
                                       datasets.transf_vol_docs),
+    "licitacoes": DatasetSpec("licitacoes", "snapshot", lambda: [],
+                              datasets.transf_vol_orgaos,
+                              datasets.transf_vol_licitacoes),
 }
 
 
