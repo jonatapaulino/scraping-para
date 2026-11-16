@@ -12,6 +12,7 @@ filtramos pelo nome completo do orgao."""
 
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Iterator, Optional
@@ -547,3 +548,154 @@ def transf_vol_docs(recorte, siglas):
                 "sub": numero,
                 "nome": f"{tipo}.pdf",
             }
+
+
+# ---------- PNCP — Portal Nacional de Contratacoes Publicas (Lei 14.133/21) ----------
+#
+# Fonte centralizada e obrigatoria de licitacoes/contratos. A API de consulta
+# indexa por CNPJ do orgao (nao por sigla) — o mapa abaixo cobre o executivo
+# estadual do PA; pra incluir outro orgao, basta descobrir o CNPJ e adicionar.
+# Documentos (edital/ata/contrato PDF) ficam na pncp-api, servico separado que
+# oscila — iter_docs e best-effort e nao derruba a unidade do CSV.
+
+PNCP_CNPJS = {
+    "DETRAN": "04822060000140",
+    "JUCEPA": "04825329000142",
+    "PRODEPA": "05059613000118",
+    "SEDUC": "05054937000163",
+    "SEFA": "05054903000179",
+    "SEGUP": "05054952000101",
+    "SEINFRA": "04953717000109",
+    "SEMAS": "34921783000168",
+    "SEOP": "03137985000190",
+    "SESPA": "05054929000117",
+}
+
+
+def pncp_orgaos(ano: int, mes: int):
+    """Universo do PNCP = orgaos com CNPJ mapeado."""
+    return [{"sigla": s, "orgao": f"{s} — CNPJ {c}"} for s, c in PNCP_CNPJS.items()]
+
+
+def pncp_periods():
+    """Publicacao no PNCP obrigatoria a partir de 2023."""
+    return [{"ano": a, "mes": None} for a in range(2023, datetime.now().year + 1)]
+
+
+def _pncp_contratos_list(ano: int, cnpj: str) -> list[dict]:
+    """Contratos do orgao no ano — cacheado p/ iter_docs+iter_rows usarem 1 fetch.
+    PNCP responde 204 (corpo vazio) quando o orgao nao tem contrato no
+    periodo — trata como lista vazia em vez de deixar o json() quebrar."""
+
+    def _fetch():
+        rows, pagina = [], 1
+        with http_client.new_client() as c:
+            while True:
+                resp = c.get(
+                    f"{config.PNCP_API_BASE}/contratos",
+                    params={
+                        "dataInicial": f"{ano}0101",
+                        "dataFinal": f"{ano}1231",
+                        "cnpjOrgao": cnpj,
+                        "pagina": pagina,
+                        "tamanhoPagina": 200,
+                    },
+                )
+                if resp.status_code == 204 or not resp.content:
+                    return rows
+                resp.raise_for_status()
+                d = resp.json()
+                rows += _data(d)
+                if pagina >= d.get("totalPaginas", 1):
+                    return rows
+                pagina += 1
+                time.sleep(config.FOLHA_PAGE_DELAY_SECONDS)
+
+    return _cached(f"pncp:contratos:{ano}:{cnpj}", _fetch)
+
+
+def _flat_contrato(row: dict, sigla: str) -> dict:
+    oe, uo = row.get("orgaoEntidade") or {}, row.get("unidadeOrgao") or {}
+    return {
+        "orgao": sigla,
+        "cnpj_orgao": oe.get("cnpj"),
+        "razao_orgao": oe.get("razaoSocial"),
+        "unidade": uo.get("nomeUnidade"),
+        "municipio": uo.get("municipioNome"),
+        "processo": row.get("processo"),
+        "ano_contrato": row.get("anoContrato"),
+        "sequencial": row.get("sequencialContrato"),
+        "objeto": row.get("objetoContrato"),
+        "fornecedor": row.get("nomeRazaoSocialFornecedor"),
+        "ni_fornecedor": row.get("niFornecedor"),
+        "tipo_pessoa": row.get("tipoPessoa"),
+        "valor_global": row.get("valorGlobal"),
+        "valor_parcela": row.get("valorParcela"),
+        "categoria": (row.get("categoriaProcesso") or {}).get("nome"),
+        "data_assinatura": row.get("dataAssinatura"),
+        "vigencia_inicio": row.get("dataVigenciaInicio"),
+        "vigencia_fim": row.get("dataVigenciaFim"),
+        "publicacao_pncp": row.get("dataPublicacaoPncp"),
+        "compra": row.get("numeroControlePncpCompra"),
+    }
+
+
+def pncp_contratos_iter(recorte: dict, siglas: list | None):
+    ano = recorte["ano"]
+    for sigla in siglas or []:
+        cnpj = PNCP_CNPJS.get(str(sigla).upper())
+        if not cnpj:
+            continue
+        for row in _pncp_contratos_list(ano, cnpj):
+            yield _flat_contrato(row, sigla)
+
+
+def _compra_ref(contrato: dict):
+    """'05054937000163-1-000031/2025' -> (cnpj, ano, sequencial)."""
+    try:
+        ref = str(contrato.get("numeroControlePncpCompra") or "")
+        cnpj = ref.split("-")[0]
+        seq, ano = ref.split("-")[-1].split("/")
+        return cnpj, int(ano), int(seq)
+    except (IndexError, ValueError):
+        return None
+
+
+def pncp_contratos_docs(recorte: dict, siglas: list | None):
+    """Arquivos da contratacao vinculada a cada contrato (edital, ata,
+    contrato). Uma compra pode gerar varios contratos — dedup por ref.
+    Falha na pncp-api de uma compra = warn + segue (best-effort)."""
+    ano = recorte["ano"]
+    vistos = set()
+    for sigla in siglas or []:
+        cnpj = PNCP_CNPJS.get(str(sigla).upper())
+        if not cnpj:
+            continue
+        for ctr in _pncp_contratos_list(ano, cnpj):
+            ref = _compra_ref(ctr)
+            if not ref or ref in vistos:
+                continue
+            vistos.add(ref)
+            ccnpj, cano, cseq = ref
+            base = f"{config.PNCP_FILES_BASE}/orgaos/{ccnpj}/compras/{cano}/{cseq}"
+            try:
+                body = _get_json(f"{base}/arquivos")
+                arquivos = _data(body)
+            except Exception as e:
+                log.warning("pncp-api arquivos falhou p/ %s: %s", ref, e)
+                continue
+            proc = re.sub(
+                r"[^\w.-]+", "_",
+                str(ctr.get("processo") or f"{cano}-{cseq}"),
+            ).strip("_")
+            for a in arquivos:
+                titulo = a.get("titulo") or f"arquivo_{a.get('sequencialDocumento')}"
+                if "." not in titulo:
+                    titulo += ".pdf"
+                yield {
+                    "url": f"{base}/arquivos/{a['sequencialDocumento']}",
+                    "orgao": sigla,
+                    "sub": proc,
+                    "nome": titulo,
+                }
+            time.sleep(config.FOLHA_PAGE_DELAY_SECONDS)

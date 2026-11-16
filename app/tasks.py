@@ -53,6 +53,9 @@ TRANSIENT_ERRORS = (
     TimeoutError,
     S3Error,
     Urllib3HTTPError,
+    # resposta nao-JSON (ex.: pagina HTML de erro com status 200 — pods
+    # derrubados no gateway) — transitiva por natureza
+    json.JSONDecodeError,
 )
 
 DEAD_REQUEUEABLE = (
@@ -272,8 +275,11 @@ def extract_links(page_url: str, html: str) -> tuple[list[str], list[str]]:
             continue
         abs_url = normalize_url(abs_url)
         # .pdf no path OU na query (ex: arquivo.php?arq=/doc.pdf) — magic bytes valida falso-positivo
-        if ".pdf" in abs_url.lower() and _pdf_allow(abs_url):
-            docs.append(abs_url)
+        if ".pdf" in abs_url.lower():
+            if _pdf_allow(abs_url):
+                docs.append(abs_url)
+            # fora da whitelist: descarta — PDF nao e pagina navegavel e
+            # enfileirar como discover so queimaria uma task a toa
         elif urlparse(abs_url).netloc == base_netloc:
             pages.append(abs_url)
     return docs, pages
@@ -817,30 +823,33 @@ def discover_dataset(self, payload: dict):
 
     # Unidade = (recorte, orgao). Selecao explicita => 1 doc por orgao.
     # "todos" => expande para cada orgao do periodo (1 arquivo por sigla).
-    # Excecoes: dataset 'range' com selecao ampla (varredura unica — a API
-    # nao filtra e cada orgao custaria uma varredura completa) e datasets
-    # sem conceito de orgao.
+    # Excecao: dataset 'range' e sempre um recorte unico (a API nao filtra
+    # e cada orgao custaria uma varredura completa) — a selecao inteira vai
+    # numa unica unidade ("A+B+C") e o fetch filtra client-side.
     sel = [str(s).upper() for s in orgaos] if orgaos else None
+
+    def _labels(recorte: dict) -> list[str]:
+        """Traduz a selecao pro rotulo do dataset (sigla vs nome oficial)."""
+        try:
+            mapa = {
+                transparencia.orgao_slug(g["sigla"]): g["sigla"]
+                for g in spec.list_orgaos(
+                    recorte.get("ano", ini[0]), recorte.get("mes") or 0
+                )
+            }
+            return [mapa.get(transparencia.orgao_slug(s), s) for s in sel]
+        except Exception:
+            return list(sel)
+
     units: list[tuple[dict, Optional[str]]] = []
     for recorte in recortes:
-        if spec.granularity == "range" and (not sel or len(sel) != 1):
-            units.append((recorte, None))
+        if spec.granularity == "range":
+            units.append(
+                (recorte, "+".join(_labels(recorte)) if sel else None)
+            )
             continue
         if sel:
-            # traduz a selecao pro rotulo do dataset (sigla vs nome oficial)
-            try:
-                mapa = {
-                    transparencia.orgao_slug(g["sigla"]): g["sigla"]
-                    for g in spec.list_orgaos(
-                        recorte.get("ano", ini[0]), recorte.get("mes") or 0
-                    )
-                }
-                labels = [
-                    mapa.get(transparencia.orgao_slug(s), s) for s in sel
-                ]
-            except Exception:
-                labels = sel
-            units += [(recorte, s) for s in labels]
+            units += [(recorte, s) for s in _labels(recorte)]
             continue
         try:
             orgs = spec.list_orgaos(recorte.get("ano", ini[0]), recorte.get("mes") or 0)
@@ -927,8 +936,9 @@ def fetch_dataset_mes(self, payload: dict):
     job_id = uuid.UUID(payload["job_id"])
     documento_id = uuid.UUID(payload["documento_id"])
     recorte = {k: int(v) for k, v in payload.get("recorte", {}).items()}
-    orgao = payload.get("orgao")  # sigla/nome do orgao, ou None (recorte unico)
-    siglas = [orgao] if orgao else None
+    # rotulo do orgao — simples ou "A+B+C" (range com selecao); None = todos
+    orgao = payload.get("orgao")
+    siglas = orgao.split("+") if orgao else None
     rotulo = transparencia.recorte_label(recorte)
 
     # Documentos PDF por orgao (datasets que publicam anexos — ex.:

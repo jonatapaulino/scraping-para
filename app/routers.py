@@ -262,18 +262,22 @@ def transparencia_opcoes(
         raise HTTPException(
             400, f"Dataset '{dataset}' desconhecido — {sorted(transparencia.DATASETS)}"
         )
-    periodos = spec.list_periods()
-    if ano and mes:
-        orgaos = spec.list_orgaos(ano, mes)
-    else:
-        orgaos = []
-        if not periodos:
-            # datasets snapshot: sem periodo — orgaos independem de competencia
-            orgaos = spec.list_orgaos(0, 0)
-        for p in reversed(periodos[-6:]):
-            orgaos = spec.list_orgaos(p["ano"], p.get("mes") or 0)
-            if orgaos:
-                break
+    try:
+        periodos = spec.list_periods()
+        if ano and mes:
+            orgaos = spec.list_orgaos(ano, mes)
+        else:
+            orgaos = []
+            if not periodos:
+                # datasets snapshot: sem periodo — orgaos independem de competencia
+                orgaos = spec.list_orgaos(0, 0)
+            for p in reversed(periodos[-6:]):
+                orgaos = spec.list_orgaos(p["ano"], p.get("mes") or 0)
+                if orgaos:
+                    break
+    except Exception:
+        log.exception("Falha ao consultar opcoes do dataset %s", dataset)
+        raise HTTPException(502, "API da transparencia indisponivel no momento")
     return FolhaOpcoesOut(periodos=periodos, orgaos=orgaos)
 
 

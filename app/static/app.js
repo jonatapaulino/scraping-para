@@ -1,6 +1,7 @@
 const API = "/api/v1";
 let docPage = 1, docPages = 1;
 let secretariasCache = [];
+let secsLoaded = false, folhaOpcoesLoaded = false;
 
 const $ = (id) => document.getElementById(id);
 const fmtDate = (s) => (s ? new Date(s).toLocaleString("pt-BR") : "—");
@@ -93,6 +94,7 @@ async function loadSecretarias() {
     '<option value="">Todas secretarias</option>' +
     secretariasCache.map((s) => `<option value="${s.id}">${s.sigla}</option>`).join("");
   sel.value = cur;
+  secsLoaded = true;
 }
 
 $("secs-tbody").addEventListener("click", async (e) => {
@@ -218,10 +220,17 @@ async function loadFolhaOpcoes() {
       ? o.orgaos
           .map(
             (g) =>
-              `<label title="${g.orgao}"><input type="checkbox" value="${g.sigla}" disabled> ${g.sigla}</label>`
+              `<label title="${g.orgao}"><input type="checkbox" value="${g.sigla}"> ${g.sigla}</label>`
           )
           .join("")
       : '<span class="empty">sem órgãos</span>';
+    // reaplica o estado atual de "todos" (a lista acaba de ser recriada)
+    const todosOn = $("folha-todos").checked;
+    document.querySelectorAll("#folha-orgaos-checks input").forEach((c) => {
+      c.disabled = todosOn;
+      if (todosOn) c.checked = false;
+    });
+    folhaOpcoesLoaded = true;
   } catch (e) {
     $("folha-orgaos-checks").innerHTML = '<span class="empty">falha ao carregar opções</span>';
   }
@@ -315,8 +324,12 @@ function refreshAll() {
   loadOverview();
   loadJobs();
   loadDocuments();
+  // self-healing: o que falhar no boot (API ainda subindo) retenta aqui
+  // ate conseguir uma vez — depois nao re-entra p/ nao apagar a selecao
+  if (!secsLoaded) loadSecretarias().catch(() => {});
+  if (!folhaOpcoesLoaded) loadFolhaOpcoes();
 }
 
-loadSecretarias().then(refreshAll);
+loadSecretarias().catch(() => {}).then(refreshAll);
 loadFolhaOpcoes();
 setInterval(() => { if ($("autorefresh").checked) refreshAll(); }, 5000);

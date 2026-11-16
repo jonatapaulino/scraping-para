@@ -95,6 +95,10 @@ AREAS_API_BASE = os.getenv("AREAS_API_BASE", "https://api-areas-tematicas.sistem
 BENS_MOVEIS_API_BASE = os.getenv("BENS_MOVEIS_API_BASE", "https://api-bens-moveis.sistemas.pa.gov.br")
 BENS_IMOVEIS_API_BASE = os.getenv("BENS_IMOVEIS_API_BASE", "https://api-bens-imoveis.sistemas.pa.gov.br")
 TRANSF_VOL_API_BASE = os.getenv("TRANSF_VOL_API_BASE", "https://api-transferencias-voluntarias.sistemas.pa.gov.br")
+# PNCP — Portal Nacional de Contratacoes Publicas (Lei 14.133/21)
+# consulta = dados; pncp-api = arquivos de documento (edital/ata/contrato)
+PNCP_API_BASE = os.getenv("PNCP_API_BASE", "https://pncp.gov.br/api/consulta/v1")
+PNCP_FILES_BASE = os.getenv("PNCP_FILES_BASE", "https://pncp.gov.br/pncp-api/v1")
 
 # Espelho no Google Drive (pasta por sigla) — service account JSON
 GDRIVE_ENABLED = os.getenv("GDRIVE_ENABLED", "false").lower() in ("1", "true", "yes")
