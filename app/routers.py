@@ -343,8 +343,13 @@ def transparencia_start(req: FolhaStartRequest, s: Session = Depends(get_session
 
 @router.get("/progresso/diario")
 def progresso_diario(s: Session = Depends(get_session)):
+    return _dados_diario(s)
+
+
+def _dados_diario(s: Session, anos_filtro: Optional[list] = None):
     """Progresso do download do Diario Oficial (IOEPA): PDFs ja guardados no
-    MinIO por ano x edicoes publicadas no site da IOEPA (total do ano)."""
+    MinIO por ano x edicoes publicadas no site da IOEPA (total do ano).
+    anos_filtro: considera so esses anos (progresso de UMA tarefa)."""
     from app import datasets
 
     prefixo = "IOEPA/diario_oficial/documentos/"
@@ -362,6 +367,8 @@ def progresso_diario(s: Session = Depends(get_session)):
 
     anos = []
     for ano in sorted(contagem):
+        if anos_filtro and ano not in anos_filtro:
+            continue
         try:
             total = len(datasets._diario_edicoes(ano))
         except Exception:
@@ -489,11 +496,19 @@ def progresso_tarefas(s: Session = Depends(get_session)):
                 if total else ("descobrindo períodos…" if rodando else "nada novo para coletar")
             )
             if job.tipo == "diario_oficial":
-                d = progresso_diario(s)
-                t["percentual"] = d["percentual"]
-                t["concluidos"], t["total"] = d["baixados"], d["total"]
-                t["detalhes"] = d["anos"]
-                t["texto"] = f"{d['baixados']} de {d['total']} edições baixadas"
+                if not ordenados:
+                    t["descricao"] = "IOEPA" + (f" · {periodo}" if periodo else "")
+                anos_job = sorted({int(p[:4]) for p in periodos if p[:4].isdigit()})
+                if anos_job:
+                    d = _dados_diario(s, anos_job)
+                    t["percentual"] = d["percentual"]
+                    t["concluidos"], t["total"] = d["baixados"], d["total"]
+                    t["detalhes"] = d["anos"]
+                    t["texto"] = f"{d['baixados']} de {d['total']} edições baixadas"
+                elif not rodando:
+                    # tarefa antiga cujos anos foram reassumidos por uma rodada mais nova
+                    t["percentual"] = 100 if job.status == JobStatus.COMPLETED else None
+                    t["texto"] = "concluída (os anos dela foram refeitos em uma rodada mais nova)"
         tarefas.append(t)
 
     em_curso = [t for t in tarefas if t["situacao"] == "RUNNING"]
