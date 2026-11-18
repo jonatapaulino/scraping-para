@@ -23,6 +23,9 @@ class JobStartRequest(BaseModel):
     force_full_scrape: bool = False
     # None = usa o max_depth da secretaria (ou o default global)
     max_depth: Optional[int] = Field(default=None, ge=0, le=10)
+    # fontes de dataset (ex.: IOEPA = Diario Oficial): anos a baixar
+    ano_ini: Optional[int] = Field(default=None, ge=2008, le=2100)
+    ano_fim: Optional[int] = Field(default=None, ge=2008, le=2100)
 
 
 class JobStarted(BaseModel):

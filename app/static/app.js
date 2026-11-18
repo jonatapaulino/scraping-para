@@ -46,6 +46,17 @@ function toast(msg, err = false) {
   });
 })();
 
+// ---------- Anos do Diário Oficial (aparece só com IOEPA marcado) ----------
+
+(function iniciaAnosDiario() {
+  const atual = new Date().getFullYear();
+  $("ano-ini").value = atual - 1;
+  $("ano-fim").value = atual;
+  $("secretaria-checks").addEventListener("change", () => {
+    $("anos-diario").hidden = !document.querySelector('#secretaria-checks input[value="IOEPA"]:checked');
+  });
+})();
+
 // ---------- Overview ----------
 
 async function loadOverview() {
@@ -88,9 +99,9 @@ async function loadSecretarias() {
     ? secretariasCache
         .map(
           (s) =>
-            `<label title="${s.tipo === 'crawl' ? s.url_base : 'fonte de API — use a seção Folha'}"><input type="checkbox" value="${s.sigla}" ${
-              s.is_ativa && s.tipo === "crawl" ? "" : "disabled"
-            }> ${s.sigla}${s.is_ativa ? "" : " (inativa)"}${s.tipo === "crawl" ? "" : " (API)"}</label>`
+            `<label title="${s.tipo === 'crawl' ? s.url_base : (s.sigla === 'IOEPA' ? 'Diário Oficial do Estado — escolha os anos ao lado' : 'fonte de API — use a seção Folha')}"><input type="checkbox" value="${s.sigla}" ${
+              s.is_ativa && (s.tipo === "crawl" || s.sigla === "IOEPA") ? "" : "disabled"
+            }> ${s.sigla}${s.is_ativa ? "" : " (inativa)"}${s.tipo === "crawl" ? "" : s.sigla === "IOEPA" ? " (Diário Oficial)" : " (API)"}</label>`
         )
         .join("")
     : '<span class="empty">nenhuma cadastrada</span>';
@@ -104,7 +115,7 @@ async function loadSecretarias() {
             `<td><button class="mini" data-toggle-id="${s.id}" data-ativa="${s.is_ativa}">${
               s.is_ativa ? "desativar" : "reativar"
             }</button></td>` +
-            `<td class="nowrap">${s.tipo === "crawl" ? "" : '<span class="badge API">API</span>'}</td></tr>`
+            `<td class="nowrap">${s.tipo === "crawl" ? "" : `<span class="badge API">${s.sigla === "IOEPA" ? "Diário" : "API"}</span>`}</td></tr>`
         )
         .join("")
     : '<tr><td colspan="6" class="empty">vazio</td></tr>';
@@ -211,6 +222,9 @@ $("btn-start").addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         secretarias: selecionadas,
+        ...(selecionadas.includes("IOEPA")
+          ? { ano_ini: parseInt($("ano-ini").value, 10), ano_fim: parseInt($("ano-fim").value, 10) }
+          : {}),
         force_full_scrape: $("force").checked,
         max_depth: Number.isNaN(parseInt($("max-depth").value, 10))
           ? null
@@ -229,6 +243,49 @@ $("btn-start").addEventListener("click", async () => {
 });
 
 // ---------- Dados abertos (transparência) ----------
+
+// Lista de órgãos: SEMPRE a lista completa (base = despesas). O que o dataset
+// escolhido não tem aparece em cinza e não dá para marcar; o que só ele tem
+// (ex.: convênios) entra no fim. O valor enviado é a chave do próprio dataset.
+const normOrg = (t) =>
+  (t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+function montaOrgaos(base, doDataset) {
+  const marcados = new Set(
+    [...document.querySelectorAll("#folha-orgaos-checks input:checked")].map((c) => c.dataset.chave)
+  );
+  const aspas = (t) => String(t || "").replace(/"/g, "&quot;");
+  const item = (valor, rotulo, titulo, disponivel, marcado) =>
+    `<label class="${disponivel ? "" : "indisp"}" title="${aspas(titulo)}">` +
+    `<input type="checkbox" data-chave="${aspas(rotulo)}" value="${aspas(valor)}" ` +
+    `${disponivel ? "" : 'disabled data-indisp="1"'} ${marcado ? "checked" : ""}> ${rotulo}</label>`;
+  const usados = new Set();
+  // a lista base escreve "Nome do órgão-SIGLA": compara também sem o final "-SIGLA"
+  const nomeSemSigla = (m) => {
+    const nome = normOrg(m.orgao), sg = normOrg(m.sigla);
+    return sg && nome.endsWith(sg) ? nome.slice(0, -sg.length) : nome;
+  };
+  const indiceDe = (m) =>
+    doDataset.findIndex((e, i) =>
+      !usados.has(i) &&
+      [e.sigla, e.orgao].some(
+        (v) =>
+          normOrg(v) &&
+          (normOrg(v) === normOrg(m.sigla) || normOrg(v) === normOrg(m.orgao) || normOrg(v) === nomeSemSigla(m))
+      )
+    );
+  const linhas = base.map((m) => {
+    const i = indiceDe(m);
+    if (i < 0) return item("", m.sigla, `${m.orgao} — sem dados neste dataset`, false, false);
+    usados.add(i);
+    const e = doDataset[i];
+    return item(e.sigla, m.sigla, e.orgao || m.orgao, true, marcados.has(m.sigla));
+  });
+  doDataset.forEach((e, i) => {
+    if (!usados.has(i)) linhas.push(item(e.sigla, e.sigla, e.orgao, true, marcados.has(e.sigla)));
+  });
+  return linhas.join("");
+}
 
 async function loadFolhaOpcoes() {
   try {
@@ -253,18 +310,24 @@ async function loadFolhaOpcoes() {
       $("folha-de").selectedIndex = Math.max(0, ini);
       $("folha-ate").selectedIndex = o.periodos.length - 1;
     }
-    $("folha-orgaos-checks").innerHTML = o.orgaos.length
-      ? o.orgaos
-          .map(
-            (g) =>
-              `<label title="${g.orgao}"><input type="checkbox" value="${g.sigla}"> ${g.sigla}</label>`
-          )
-          .join("")
-      : '<span class="empty">sem órgãos</span>';
+    let base = o.orgaos;
+    if (ds !== "*" && ds !== "despesas") {
+      try {
+        base = (await api("/transparencia/opcoes?dataset=despesas")).orgaos;
+      } catch (e) {
+        base = o.orgaos; // sem a lista base: mostra só os do dataset
+      }
+    }
+    // Diário Oficial (IOEPA) fica sempre na lista; só é marcável no dataset dele
+    if (!base.some((g) => g.sigla === "IOEPA")) {
+      base = [...base, { sigla: "IOEPA", orgao: "Imprensa Oficial do Estado — Diário Oficial" }];
+    }
+    $("folha-orgaos-checks").innerHTML =
+      base.length || o.orgaos.length ? montaOrgaos(base, o.orgaos) : '<span class="empty">sem órgãos</span>';
     // reaplica o estado atual de "todos" (a lista acaba de ser recriada)
     const todosOn = $("folha-todos").checked;
     document.querySelectorAll("#folha-orgaos-checks input").forEach((c) => {
-      c.disabled = todosOn;
+      c.disabled = todosOn || c.dataset.indisp === "1";
       if (todosOn) c.checked = false;
     });
     folhaOpcoesLoaded = true;
@@ -278,7 +341,7 @@ $("folha-dataset").addEventListener("change", loadFolhaOpcoes);
 $("folha-todos").addEventListener("change", () => {
   const on = $("folha-todos").checked;
   document.querySelectorAll("#folha-orgaos-checks input").forEach((c) => {
-    c.disabled = on;
+    c.disabled = on || c.dataset.indisp === "1";
     if (on) c.checked = false;
   });
 });
@@ -357,10 +420,34 @@ $("f-status").addEventListener("change", () => { docPage = 1; loadDocuments(); }
 
 // ---------- Loop ----------
 
+const fmtHora = (iso) =>
+  iso
+    ? new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+    : "";
+
+// tarefas terminadas ficam na lista até você dispensar (guardado neste navegador)
+function tarefasDispensadas() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem("tarefasDispensadas") || "[]"));
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function dispensarTarefa(id) {
+  const d = tarefasDispensadas();
+  d.add(id);
+  try {
+    localStorage.setItem("tarefasDispensadas", JSON.stringify([...d].slice(-200)));
+  } catch (e) {}
+}
+
 async function loadProgressoTarefas() {
   try {
     const p = await api("/progresso/tarefas");
-    if (!p.tarefas.length) { $("prog-tarefas").hidden = true; return; }
+    const dispensadas = tarefasDispensadas();
+    const tarefas = p.tarefas.filter((t) => t.situacao === "RUNNING" || !dispensadas.has(t.job_id));
+    if (!tarefas.length) { $("prog-tarefas").hidden = true; return; }
     $("prog-tarefas").hidden = false;
     const g = p.geral;
     $("prog-geral").hidden = g.tarefas_rodando < 2;
@@ -370,18 +457,37 @@ async function loadProgressoTarefas() {
       $("prog-geral-bar").style.width = pg + "%";
       $("prog-geral-pct").textContent = pg + "%";
     }
-    $("prog-tarefas-lista").innerHTML = p.tarefas
+    $("prog-tarefas-lista").innerHTML = tarefas
       .map((t) => {
         const feito = t.situacao === "COMPLETED";
+        const falhou = t.situacao === "FAILED";
         const falhas = t.falhas ? ` · ${t.falhas} falha(s)` : "";
-        return `<div class="prog-item"><div class="prog-resumo"><span><b>${t.fonte}</b> <span class="hint">${t.descricao}</span></span>${badge(t.situacao)}</div>` +
-          `${t.percentual == null ? "" : barra(t.percentual, feito)}<div class="hint">${t.texto}${falhas}</div></div>`;
+        const quando = fmtHora(t.concluida_em);
+        const texto = feito
+          ? `✓ Download concluído${quando ? " em " + quando : ""} — ${t.texto}${falhas}`
+          : falhou
+            ? `✗ Interrompida${quando ? " em " + quando : ""} — ${t.texto}${falhas}`
+            : `${t.texto}${falhas}`;
+        const fechar = t.situacao === "RUNNING"
+          ? ""
+          : `<button class="mini" data-dispensar="${t.job_id}" title="Remover da lista">×</button>`;
+        const pct = feito && t.percentual == null ? 100 : t.percentual;
+        return `<div class="prog-item"><div class="prog-resumo"><span><b>${t.fonte}</b> <span class="hint">${t.descricao}</span></span>` +
+          `<span class="nowrap">${badge(t.situacao)} ${fechar}</span></div>` +
+          `${pct == null ? "" : barra(pct, feito)}<div class="hint">${texto}</div></div>`;
       })
       .join("");
   } catch (err) {
     $("prog-tarefas").hidden = true;
   }
 }
+
+$("prog-tarefas-lista").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-dispensar]");
+  if (!b) return;
+  dispensarTarefa(b.dataset.dispensar);
+  loadProgressoTarefas();
+});
 
 function refreshAll() {
   loadOverview();

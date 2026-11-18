@@ -42,6 +42,10 @@ def get_session():
         yield s
 
 
+# fontes "virtuais" da tela inicial que disparam um dataset (nao um crawl)
+_FONTES_DATASET = {"IOEPA": "diario_oficial"}
+
+
 @router.post("/jobs/start", response_model=JobStartResponse, status_code=status.HTTP_202_ACCEPTED)
 def start_jobs(req: JobStartRequest, s: Session = Depends(get_session)):
     # Valida todas as siglas antes de disparar qualquer job — evita
@@ -55,16 +59,27 @@ def start_jobs(req: JobStartRequest, s: Session = Depends(get_session)):
             raise HTTPException(404, f"Secretaria '{sigla}' nao cadastrada")
         if not sec.is_ativa:
             raise HTTPException(400, f"Secretaria '{sigla}' esta inativa")
-        if sec.tipo != "crawl":
+        if sec.sigla not in _FONTES_DATASET and sec.tipo != "crawl":
             raise HTTPException(
                 400,
                 f"'{sigla}' e fonte de API, nao portal — use POST /api/v1/folha/start",
             )
         secs.append(sec)
-    job_ids = [
-        start_job_for_secretaria(s, sec, req.force_full_scrape, req.max_depth).id
-        for sec in secs
-    ]
+    ano_atual = datetime.now(timezone.utc).year
+    ano_ini = req.ano_ini or ano_atual - 1
+    ano_fim = req.ano_fim or ano_atual
+    if ano_ini > ano_fim:
+        raise HTTPException(400, "Ano inicial maior que o final")
+    job_ids = []
+    for sec in secs:
+        if sec.sigla in _FONTES_DATASET:
+            job = start_dataset_job(
+                s, _FONTES_DATASET[sec.sigla], ano_ini, 1, ano_fim, 12, None,
+                req.force_full_scrape,
+            )
+        else:
+            job = start_job_for_secretaria(s, sec, req.force_full_scrape, req.max_depth)
+        job_ids.append(job.id)
     return JobStartResponse(job_ids=job_ids)
 
 
@@ -403,7 +418,7 @@ def _parse_unidade(url: str):
 def progresso_tarefas(s: Session = Depends(get_session)):
     """Tarefas em andamento (e as concluidas ha pouco) com fonte, descricao e
     progresso — crawl por secretaria ou dataset (um ou todos os orgaos)."""
-    limite = datetime.now(timezone.utc) - timedelta(minutes=15)
+    limite = datetime.now(timezone.utc) - timedelta(hours=24)
     jobs = s.execute(
         select(ScrapingJob, Secretaria.sigla)
         .join(Secretaria, Secretaria.id == ScrapingJob.secretaria_id)
@@ -437,6 +452,8 @@ def progresso_tarefas(s: Session = Depends(get_session)):
             "falhas": falhas,
             "total": total,
             "detalhes": [],
+            "iniciada_em": job.started_at.isoformat() if job.started_at else None,
+            "concluida_em": job.completed_at.isoformat() if job.completed_at else None,
         }
         if job.tipo == "crawl":
             t["fonte"] = sigla

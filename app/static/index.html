@@ -15,7 +15,7 @@
   try { _tema = localStorage.getItem("tema") || "auto"; } catch (e) {}
   aplicarTema(_tema);
 </script>
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 <header>
@@ -42,7 +42,7 @@
   </section>
 
   <section class="panel" id="prog-tarefas" hidden>
-    <h2>Tarefas em andamento</h2>
+    <h2>Progresso das tarefas</h2>
     <div id="prog-geral" hidden>
       <div class="prog-resumo"><span id="prog-geral-txt">–</span></div>
       <div class="barra-linha"><div class="bar big"><div class="bar-fill" id="prog-geral-bar" style="width:0%"></div></div><span class="bar-pct" id="prog-geral-pct">0%</span></div>
@@ -57,6 +57,7 @@
       <div class="start-actions">
         <label title="Ignora páginas já visitadas e reprocessa tudo do zero"><input type="checkbox" id="force"> forçar raspagem completa</label>
         <label title="Vazio = usa a profundidade cadastrada na secretaria (ou o padrão do sistema)">profundidade: <input type="number" id="max-depth" placeholder="padrão" min="0" max="10" style="width:70px"></label>
+        <label id="anos-diario" hidden title="Anos do Diário Oficial a baixar">anos do diário: <input type="number" id="ano-ini" min="2008" max="2100" style="width:80px"> até <input type="number" id="ano-fim" min="2008" max="2100" style="width:80px"></label>
         <button id="btn-start" class="primary">Iniciar tarefa</button>
       </div>
     </div>
@@ -153,6 +154,6 @@
 </main>
 
 <div id="toast"></div>
-<script src="app.js?v=7"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

@@ -223,3 +223,4 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .bar-pct { min-width: 48px; text-align: right; font-size: 13px; font-weight: 600; color: var(--text); }
 .prog-item .barra-linha { margin: 6px 0 4px; }
 .prog-item .bar { margin: 0; }
+.checks label.indisp { opacity: 0.45; cursor: not-allowed; }

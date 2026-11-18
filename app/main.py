@@ -37,10 +37,28 @@ def seed_secretarias() -> None:
         log.info("Seed: %d secretarias registradas", len(pairs))
 
 
+def seed_fontes_virtuais() -> None:
+    """Fontes que nao sao portais de crawl (tipo 'api'): aparecem na tela inicial
+    e disparam um dataset. IOEPA = Diario Oficial do Estado."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    with SessionLocal() as s:
+        s.execute(
+            pg_insert(Secretaria)
+            .values(
+                sigla="IOEPA", url_base="http://www.ioepa.com.br/pages/",
+                tipo="api", is_ativa=True,
+            )
+            .on_conflict_do_nothing(index_elements=["sigla"])
+        )
+        s.commit()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
     seed_secretarias()
+    seed_fontes_virtuais()
     try:
         conn = broker._connect()
         broker.declare_topology(conn.channel())
