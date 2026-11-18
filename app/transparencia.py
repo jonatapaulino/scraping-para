@@ -33,6 +33,8 @@ class DatasetSpec:
     iter_rows: Callable[[dict, Optional[list[str]]], Iterator[dict]]
     # datasets que tambem publicam documentos PDF por orgao
     iter_docs: Optional[Callable[[dict, Optional[list[str]]], Iterator[dict]]] = None
+    # False = fora de "todos os datasets" (volume grande / fonte nao financeira)
+    incluir_em_todos: bool = True
 
 
 def _mes_iters(iter_ano_mes):
@@ -72,6 +74,9 @@ DATASETS: dict[str, DatasetSpec] = {
     "pncp_contratos": DatasetSpec("pncp_contratos", "ano", datasets.pncp_periods,
                                   datasets.pncp_orgaos, datasets.pncp_contratos_iter,
                                   datasets.pncp_contratos_docs),
+    "diario_oficial": DatasetSpec("diario_oficial", "ano", datasets.diario_periods,
+                                  datasets.diario_orgaos, datasets.diario_iter,
+                                  datasets.diario_docs, incluir_em_todos=False),
 }
 
 

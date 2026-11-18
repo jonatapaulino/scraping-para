@@ -690,6 +690,48 @@ def dispatch_scheduled():
 
 
 @celery.task
+def dispatch_datasets_scheduled(grupo: str):
+    """Beat: coleta automatica de dados abertos.
+
+    grupo 'diario'  -> AUTO_DIARIO_DATASETS (ano corrente; PDFs ja baixados sao pulados)
+    grupo 'mensais' -> AUTO_MENSAIS_DATASETS (mes corrente + anterior, p/ pegar a
+                       competencia que acabou de ser publicada)
+    force=True: o dedup por (dataset x periodo) bloquearia a re-coleta; os arquivos
+    ja existentes sao pulados e o CSV so e regravado se o conteudo mudou."""
+    agora = datetime.now(timezone.utc)
+    ano, mes = agora.year, agora.month
+    ant_ano, ant_mes = (ano, mes - 1) if mes > 1 else (ano - 1, 12)
+    slugs = (
+        config.AUTO_DIARIO_DATASETS if grupo == "diario" else config.AUTO_MENSAIS_DATASETS
+    )
+    # convenios/licitacoes/diario nao filtram por sigla dos 5 orgaos
+    sem_filtro = {"diario_oficial", "transf_voluntarias", "licitacoes", "bens_imoveis"}
+    ok = 0
+    with SessionLocal() as s:
+        for slug in slugs:
+            spec = transparencia.DATASETS.get(slug)
+            if spec is None:
+                log.warning("Auto: dataset desconhecido %r", slug)
+                continue
+            orgaos = None if slug in sem_filtro else (config.AUTO_ORGAOS or None)
+            if spec.granularity == "mes":
+                ini = (ant_ano, ant_mes)
+            elif spec.granularity == "ano":
+                ini = (ano, 1)
+            else:
+                ini = (ano, mes)
+            try:
+                start_dataset_job(
+                    s, slug, ini[0], ini[1], ano, mes, orgaos, force=True,
+                )
+                ok += 1
+            except Exception:
+                log.exception("Auto: falha ao disparar %s", slug)
+    log.info("Auto (%s): %d/%d datasets disparados", grupo, ok, len(slugs))
+    return ok
+
+
+@celery.task
 def reconcile_stalled():
     """Fecha as janelas de trabalho orfao que o contador de pending nao cobre:
 

@@ -14,7 +14,9 @@ from sqlalchemy.orm import Session
 
 from app import config, storage, transparencia
 from app.database import SessionLocal
-from app.models import CrawledPage, Documento, DownloadStatus, ScrapingJob, Secretaria
+from app.models import (
+    CrawledPage, Documento, DownloadStatus, JobStatus, ScrapingJob, Secretaria,
+)
 from app.schemas import (
     DocumentoOut,
     FolhaOpcoesOut,
@@ -250,6 +252,9 @@ def document_file(doc_id: uuid.UUID, s: Session = Depends(get_session)):
     )
 
 
+_OPCOES_OK: dict = {}  # ultimo resultado bom por (dataset, ano, mes) — serve se a API cair
+
+
 @router.get("/transparencia/opcoes", response_model=FolhaOpcoesOut)
 @router.get("/folha/opcoes", response_model=FolhaOpcoesOut)
 def transparencia_opcoes(
@@ -277,8 +282,15 @@ def transparencia_opcoes(
                     break
     except Exception:
         log.exception("Falha ao consultar opcoes do dataset %s", dataset)
-        raise HTTPException(502, "API da transparencia indisponivel no momento")
-    return FolhaOpcoesOut(periodos=periodos, orgaos=orgaos)
+        antigo = _OPCOES_OK.get((dataset, ano, mes))
+        if antigo is not None:
+            return antigo  # ultima resposta boa (API fora do ar agora)
+        raise HTTPException(
+            502, f"API de '{dataset}' indisponivel no momento — tente de novo em instantes"
+        )
+    out = FolhaOpcoesOut(periodos=periodos, orgaos=orgaos)
+    _OPCOES_OK[(dataset, ano, mes)] = out
+    return out
 
 
 @router.post("/transparencia/start", status_code=status.HTTP_202_ACCEPTED)
@@ -297,7 +309,8 @@ def transparencia_start(req: FolhaStartRequest, s: Session = Depends(get_session
                 s, slug, req.ano_ini, req.mes_ini, req.ano_fim, req.mes_fim,
                 req.orgaos or None, req.force,
             )
-            for slug in transparencia.DATASETS
+            for slug, spec in transparencia.DATASETS.items()
+            if spec.incluir_em_todos
         ]
         return {"job_ids": [str(j.id) for j in jobs]}
     if transparencia.get_spec(req.dataset) is None:
@@ -311,3 +324,171 @@ def transparencia_start(req: FolhaStartRequest, s: Session = Depends(get_session
         req.orgaos or None, req.force,
     )
     return {"job_id": job.id}
+
+
+@router.get("/progresso/diario")
+def progresso_diario(s: Session = Depends(get_session)):
+    """Progresso do download do Diario Oficial (IOEPA): PDFs ja guardados no
+    MinIO por ano x edicoes publicadas no site da IOEPA (total do ano)."""
+    from app import datasets
+
+    prefixo = "IOEPA/diario_oficial/documentos/"
+    contagem: dict[int, int] = {}
+    try:
+        for obj in storage.client().list_objects(
+            config.MINIO_BUCKET, prefix=prefixo, recursive=True
+        ):
+            partes = obj.object_name[len(prefixo):].split("/")
+            if len(partes) >= 2 and partes[0].isdigit():
+                contagem[int(partes[0])] = contagem.get(int(partes[0]), 0) + 1
+    except S3Error:
+        log.exception("Falha ao listar o diario no MinIO")
+        raise HTTPException(502, "MinIO indisponivel no momento")
+
+    anos = []
+    for ano in sorted(contagem):
+        try:
+            total = len(datasets._diario_edicoes(ano))
+        except Exception:
+            total = None
+        baixados = contagem[ano]
+        anos.append({
+            "ano": ano,
+            "baixados": baixados,
+            "total": total,
+            "percentual": min(100, round(baixados * 100 / total, 1)) if total else None,
+        })
+    soma_b = sum(a["baixados"] for a in anos)
+    soma_t = sum(a["total"] or 0 for a in anos)
+    job = s.execute(
+        select(ScrapingJob)
+        .where(ScrapingJob.tipo == "diario_oficial")
+        .order_by(ScrapingJob.started_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return {
+        "anos": anos,
+        "baixados": soma_b,
+        "total": soma_t,
+        "percentual": min(100, round(soma_b * 100 / soma_t, 1)) if soma_t else None,
+        "situacao": job.status.value if job else None,
+    }
+
+
+_DATASET_PT = {
+    "folha": "Folha de pagamento", "despesas": "Despesas", "empenhos": "Notas de empenho",
+    "receitas": "Receitas", "diarias": "Diárias", "transf_recursos": "Transferência de recursos",
+    "suprimento": "Suprimento de fundos", "obras": "Obras", "areas": "Áreas temáticas",
+    "bens_moveis": "Bens móveis", "bens_imoveis": "Bens imóveis",
+    "transf_voluntarias": "Convênios", "licitacoes": "Licitações (convênios)",
+    "pncp_contratos": "Contratos PNCP", "diario_oficial": "Diário Oficial (IOEPA)",
+}
+
+
+def _parse_unidade(url: str):
+    """'transparencia://folha/2025/03/SEDUC' -> ('2025/03', 'SEDUC').
+    Sem sufixo de orgao => None (= todos os orgaos)."""
+    partes = url.split("://", 1)[-1].split("/")[1:]
+    if partes and partes[0] == "snapshot":
+        return "snapshot", "/".join(partes[1:]) or None
+    if (len(partes) >= 2 and len(partes[0]) == 4 and partes[0].isdigit()
+            and len(partes[1]) == 2 and partes[1].isdigit()):
+        return "/".join(partes[:2]), "/".join(partes[2:]) or None
+    if partes:
+        return partes[0], "/".join(partes[1:]) or None
+    return "", None
+
+
+@router.get("/progresso/tarefas")
+def progresso_tarefas(s: Session = Depends(get_session)):
+    """Tarefas em andamento (e as concluidas ha pouco) com fonte, descricao e
+    progresso — crawl por secretaria ou dataset (um ou todos os orgaos)."""
+    limite = datetime.now(timezone.utc) - timedelta(minutes=15)
+    jobs = s.execute(
+        select(ScrapingJob, Secretaria.sigla)
+        .join(Secretaria, Secretaria.id == ScrapingJob.secretaria_id)
+        .where(
+            (ScrapingJob.status == JobStatus.RUNNING)
+            | (ScrapingJob.completed_at >= limite)
+        )
+        .order_by(ScrapingJob.started_at.desc())
+        .limit(30)
+    ).all()
+
+    tarefas = []
+    for job, sigla in jobs:
+        cont = dict(
+            s.execute(
+                select(Documento.status_download, func.count())
+                .where(Documento.job_id == job.id)
+                .group_by(Documento.status_download)
+            ).all()
+        )
+        ok = cont.get(DownloadStatus.SUCCESS, 0)
+        falhas = cont.get(DownloadStatus.FAILED, 0)
+        total = max(job.total_pdfs_encontrados or 0, sum(cont.values()))
+        feitos = ok + falhas
+        rodando = job.status == JobStatus.RUNNING
+        t = {
+            "job_id": str(job.id),
+            "situacao": job.status.value,
+            "tipo": job.tipo,
+            "concluidos": feitos,
+            "falhas": falhas,
+            "total": total,
+            "detalhes": [],
+        }
+        if job.tipo == "crawl":
+            t["fonte"] = sigla
+            t["descricao"] = "varredura do site (PDFs)"
+            t["percentual"] = min(100, round(feitos * 100 / total, 1)) if total else None
+            t["texto"] = (
+                f"{feitos} de {total} PDFs encontrados" + (" até agora — ainda descobrindo" if rodando else "")
+                if total else ("procurando PDFs…" if rodando else "nenhum PDF novo")
+            )
+        else:
+            urls = s.execute(
+                select(Documento.url_origem).where(Documento.job_id == job.id).limit(3000)
+            ).scalars().all()
+            periodos, orgaos = set(), set()
+            for u in urls:
+                chave, org = _parse_unidade(u)
+                if chave:
+                    periodos.add(chave)
+                if org:
+                    orgaos.update(org.split("+"))
+            ordenados = sorted(orgaos)
+            quais = (
+                "todos os órgãos" if not ordenados
+                else ", ".join(ordenados[:6]) + (f" +{len(ordenados) - 6}" if len(ordenados) > 6 else "")
+            )
+            per = sorted(periodos)
+            periodo = "" if not per else (per[0] if len(per) == 1 else f"{per[0]} a {per[-1]}")
+            t["fonte"] = _DATASET_PT.get(job.tipo, job.tipo)
+            t["descricao"] = quais + (f" · {periodo}" if periodo else "")
+            t["percentual"] = min(100, round(feitos * 100 / total, 1)) if total else None
+            t["texto"] = (
+                f"{feitos} de {total} partes concluídas"
+                if total else ("descobrindo períodos…" if rodando else "nada novo para coletar")
+            )
+            if job.tipo == "diario_oficial":
+                d = progresso_diario(s)
+                t["percentual"] = d["percentual"]
+                t["concluidos"], t["total"] = d["baixados"], d["total"]
+                t["detalhes"] = d["anos"]
+                t["texto"] = f"{d['baixados']} de {d['total']} edições baixadas"
+        tarefas.append(t)
+
+    em_curso = [t for t in tarefas if t["situacao"] == "RUNNING"]
+    soma_total = sum(t["total"] for t in em_curso)
+    soma_feito = sum(t["concluidos"] for t in em_curso)
+    return {
+        "tarefas": tarefas,
+        "geral": {
+            "tarefas_rodando": len(em_curso),
+            "concluidos": soma_feito,
+            "total": soma_total,
+            "percentual": min(100, round(soma_feito * 100 / soma_total, 1)) if soma_total else None,
+        },
+    }
+ 

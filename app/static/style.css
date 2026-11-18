@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg: #0d1117;
   --panel: #161b22;
   --border: #2d333b;
@@ -104,7 +105,7 @@ button {
   font-size: 13px;
 }
 button:hover { filter: brightness(1.2); }
-button.primary { background: var(--accent); }
+button.primary { background: var(--accent); color: #fff; }
 button:disabled { opacity: 0.5; cursor: default; }
 button.mini { padding: 2px 8px; font-size: 11px; border-radius: 4px; }
 .card .mini { align-self: flex-start; margin-top: 4px; }
@@ -187,3 +188,38 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 }
 .toast.error { border-left-color: var(--red); }
 @keyframes slidein { from { transform: translateX(30px); opacity: 0; } }
+
+/* barras de progresso */
+.bar { position: relative; background: var(--border); border-radius: 6px; height: 14px; overflow: hidden; min-width: 90px; }
+.bar.big { height: 22px; margin: 6px 0 12px; }
+.bar-fill { height: 100%; background: var(--accent); transition: width .6s ease; }
+.bar-fill.done { background: var(--green); }
+.bar-txt { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: var(--text); text-shadow: 0 0 3px var(--bg), 0 0 3px var(--bg), 0 0 3px var(--bg); }
+.prog-resumo { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.prog-ano { display: grid; grid-template-columns: 56px 1fr 130px; align-items: center; gap: 10px; margin: 6px 0; font-size: 13px; }
+.prog-ano .num { text-align: right; color: var(--muted); }
+.prog-item { border-top: 1px solid var(--border); padding: 10px 0 6px; }
+.prog-item:first-of-type { border-top: 0; }
+.prog-item .bar { height: 18px; margin: 6px 0 4px; }
+
+/* tema claro */
+:root[data-tema="claro"] {
+  color-scheme: light;
+  --bg: #f6f8fa;
+  --panel: #ffffff;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --muted: #59636e;
+  --accent: #0969da;
+  --green: #1a7f37;
+  --red: #cf222e;
+  --yellow: #9a6700;
+}
+:root[data-tema="claro"] button:hover { filter: brightness(0.92); }
+
+/* percentual ao lado da barra (legivel em qualquer tema) */
+.barra-linha { display: flex; align-items: center; gap: 10px; }
+.barra-linha .bar { flex: 1; margin: 0; }
+.bar-pct { min-width: 48px; text-align: right; font-size: 13px; font-weight: 600; color: var(--text); }
+.prog-item .barra-linha { margin: 6px 0 4px; }
+.prog-item .bar { margin: 0; }

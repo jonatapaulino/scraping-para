@@ -73,6 +73,23 @@ DOC_ORPHAN_HOURS = _int("DOC_ORPHAN_HOURS", 8)
 JOB_STALL_HOURS = _int("JOB_STALL_HOURS", 24)
 RECONCILE_CRON = os.getenv("RECONCILE_CRON", "*/30 * * * *")
 
+# Crawl diario das secretarias cadastradas (Beat). Desligue para rodar so as
+# coletas automaticas de dados abertos abaixo.
+BEAT_CRAWL_ENABLED = os.getenv("BEAT_CRAWL_ENABLED", "true").lower() == "true"
+
+# Coleta automatica de datasets (API/PNCP/Diario). Horarios em UTC (BRT = UTC-3).
+AUTO_DATASETS_ENABLED = os.getenv("AUTO_DATASETS_ENABLED", "false").lower() == "true"
+AUTO_ORGAOS = [o.strip().upper() for o in os.getenv(
+    "AUTO_ORGAOS", "DETRAN,PRODEPA,SEDUC,SEGUP,SESPA").split(",") if o.strip()]
+# diario: todo dia (edicoes novas); mensais: semanal (competencia nova do mes)
+AUTO_DIARIO_CRON = os.getenv("AUTO_DIARIO_CRON", "0 6 * * *")
+AUTO_DIARIO_DATASETS = [d.strip() for d in os.getenv(
+    "AUTO_DIARIO_DATASETS", "diario_oficial").split(",") if d.strip()]
+AUTO_MENSAIS_CRON = os.getenv("AUTO_MENSAIS_CRON", "0 9 * * 1")
+AUTO_MENSAIS_DATASETS = [d.strip() for d in os.getenv(
+    "AUTO_MENSAIS_DATASETS",
+    "folha,despesas,empenhos,pncp_contratos,transf_voluntarias").split(",") if d.strip()]
+
 # API de dados abertos do Portal da Transparencia (folha de pagamento)
 FOLHA_API_BASE = os.getenv(
     "FOLHA_API_BASE",
@@ -97,6 +114,7 @@ BENS_IMOVEIS_API_BASE = os.getenv("BENS_IMOVEIS_API_BASE", "https://api-bens-imo
 TRANSF_VOL_API_BASE = os.getenv("TRANSF_VOL_API_BASE", "https://api-transferencias-voluntarias.sistemas.pa.gov.br")
 # PNCP — Portal Nacional de Contratacoes Publicas (Lei 14.133/21)
 # consulta = dados; pncp-api = arquivos de documento (edital/ata/contrato)
+IOEPA_BASE = os.getenv("IOEPA_BASE", "http://www.ioepa.com.br")
 PNCP_API_BASE = os.getenv("PNCP_API_BASE", "https://pncp.gov.br/api/consulta/v1")
 PNCP_FILES_BASE = os.getenv("PNCP_FILES_BASE", "https://pncp.gov.br/pncp-api/v1")
 

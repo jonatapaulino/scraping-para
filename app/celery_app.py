@@ -39,6 +39,7 @@ celery.conf.update(
         "app.tasks.reconcile_stalled": {"queue": config.Q_DISCOVERY},
         "app.tasks.discover_dataset": {"queue": config.Q_DISCOVERY},
         "app.tasks.fetch_dataset_mes": {"queue": config.Q_DOWNLOAD},
+        "app.tasks.dispatch_datasets_scheduled": {"queue": config.Q_DISCOVERY},
     },
     task_acks_late=True,
     task_reject_on_worker_lost=True,
@@ -62,11 +63,23 @@ def _cron(expr: str):
 def _beat_schedule() -> dict:
     schedule = {}
     dispatch = _cron(config.CELERY_BEAT_CRON)
-    if dispatch:
+    if dispatch and config.BEAT_CRAWL_ENABLED:
         schedule["dispatch-active-secretarias"] = {
             "task": "app.tasks.dispatch_scheduled",
             "schedule": dispatch,
         }
+    if config.AUTO_DATASETS_ENABLED:
+        for nome, expr, grupo in (
+            ("auto-diario", config.AUTO_DIARIO_CRON, "diario"),
+            ("auto-mensais", config.AUTO_MENSAIS_CRON, "mensais"),
+        ):
+            c = _cron(expr)
+            if c:
+                schedule[nome] = {
+                    "task": "app.tasks.dispatch_datasets_scheduled",
+                    "schedule": c,
+                    "args": (grupo,),
+                }
     reconcile = _cron(config.RECONCILE_CRON)
     if reconcile:
         schedule["reconcile-stalled"] = {

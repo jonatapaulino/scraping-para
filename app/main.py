@@ -87,6 +87,15 @@ def root():
     return RedirectResponse("/ui/")
 
 
+@app.middleware("http")
+async def _ui_sem_cache(request, call_next):
+    """Painel sempre revalida: o navegador nao fica com app.js/style.css antigos."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/ui"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="ui")
 
 

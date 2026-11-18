@@ -7,7 +7,10 @@ const $ = (id) => document.getElementById(id);
 const fmtDate = (s) => (s ? new Date(s).toLocaleString("pt-BR") : "—");
 const fmtBytes = (n) =>
   n == null ? "—" : n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? (n / 1e3).toFixed(1) + " KB" : n + " B";
-const badge = (st) => `<span class="badge ${st}">${st}</span>`;
+const ROTULOS = { RUNNING: "Em andamento", COMPLETED: "Concluído", FAILED: "Falhou", SUCCESS: "Sucesso", PENDING: "Pendente" };
+const badge = (st) => `<span class="badge ${st}">${ROTULOS[st] || st}</span>`;
+const barra = (pct, feito) =>
+  `<div class="barra-linha"><div class="bar"><div class="bar-fill${feito ? " done" : ""}" style="width:${pct}%"></div></div><span class="bar-pct">${pct}%</span></div>`;
 
 async function api(path, opts) {
   const r = await fetch(API + path, opts);
@@ -26,12 +29,29 @@ function toast(msg, err = false) {
   setTimeout(() => el.remove(), 5000);
 }
 
+// ---------- Tema (automático / claro / escuro) ----------
+
+(function iniciaTema() {
+  const sel = $("tema");
+  let escolha = "auto";
+  try { escolha = localStorage.getItem("tema") || "auto"; } catch (e) {}
+  sel.value = escolha;
+  sel.addEventListener("change", () => {
+    try { localStorage.setItem("tema", sel.value); } catch (e) {}
+    aplicarTema(sel.value);
+  });
+  // no modo automático, acompanha a mudança do sistema operacional
+  window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+    if (sel.value === "auto") aplicarTema("auto");
+  });
+})();
+
 // ---------- Overview ----------
 
 async function loadOverview() {
   try {
     const o = await api("/overview");
-    $("api-status").textContent = "API online";
+    $("api-status").textContent = "API conectada";
     $("api-status").className = "pill on";
     $("q-discovery").textContent = o.queues["q.discovery"] ?? "–";
     $("q-download").textContent = o.queues["q.download"] ?? "–";
@@ -42,7 +62,7 @@ async function loadOverview() {
       `${o.last_24h.documents_ok} ok · ${o.last_24h.documents_failed} falhas`;
     $("jobs-running").textContent = o.jobs.RUNNING ?? 0;
   } catch (e) {
-    $("api-status").textContent = "API offline";
+    $("api-status").textContent = "API desconectada";
     $("api-status").className = "pill off";
   }
 }
@@ -132,13 +152,29 @@ $("secs-tbody").addEventListener("click", async (e) => {
 $("sec-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
-    await api("/secretarias", {
+    const depth = parseInt($("sec-depth").value, 10);
+    const sec = await api("/secretarias", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sigla: $("sec-sigla").value, url_base: $("sec-url").value }),
+      body: JSON.stringify({
+        sigla: $("sec-sigla").value,
+        url_base: $("sec-url").value,
+        max_depth: Number.isNaN(depth) ? null : depth,
+      }),
     });
-    toast("Secretaria cadastrada");
-    $("sec-sigla").value = $("sec-url").value = "";
+    toast("Fonte cadastrada");
+    if ($("sec-run").checked) {
+      const r = await api("/jobs/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secretarias: [sec.sigla], force_full_scrape: false, max_depth: null }),
+      });
+      toast(`${r.job_ids.length} tarefa(s) iniciada(s) para ${sec.sigla}`);
+      loadJobs();
+      loadOverview();
+    }
+    $("sec-sigla").value = $("sec-url").value = $("sec-depth").value = "";
+    $("sec-run").checked = false;
     loadSecretarias();
   } catch (err) {
     toast(err.message, true);
@@ -155,11 +191,12 @@ async function loadJobs() {
           (j) =>
             `<tr><td class="mono" title="${j.job_id}">${j.job_id.slice(0, 8)}…</td>` +
             `<td class="nowrap">${j.secretaria}</td><td class="nowrap">${badge(j.status)}</td>` +
+            `<td>${j.pdfs_descobertos > 0 ? barra(Math.min(100, Math.round(((j.pdfs_baixados_sucesso + j.pdfs_falhas) * 100) / j.pdfs_descobertos)), j.status === "COMPLETED") : "–"}</td>` +
             `<td>${j.pdfs_descobertos}</td><td>${j.pdfs_baixados_sucesso}</td>` +
             `<td>${j.pdfs_falhas}</td><td class="mono">${fmtDate(j.started_at)}</td></tr>`
         )
         .join("")
-    : '<tr><td colspan="7" class="empty">nenhum job ainda</td></tr>';
+    : '<tr><td colspan="8" class="empty">nenhuma tarefa ainda</td></tr>';
 }
 
 $("btn-start").addEventListener("click", async () => {
@@ -180,8 +217,8 @@ $("btn-start").addEventListener("click", async () => {
           : parseInt($("max-depth").value, 10),
       }),
     });
-    $("start-result").textContent = "jobs: " + r.job_ids.join(", ");
-    toast(`${r.job_ids.length} job(s) disparado(s)`);
+    $("start-result").textContent = "tarefas: " + r.job_ids.join(", ");
+    toast(`${r.job_ids.length} tarefa(s) iniciada(s)`);
     loadJobs();
     loadOverview();
   } catch (err) {
@@ -198,7 +235,7 @@ async function loadFolhaOpcoes() {
     const ds = $("folha-dataset").value;
     // "*" (todos os datasets): usa as opcoes da folha so como referencia
     // de periodo/orgaos — cada dataset resolve os proprios no backend
-    const o = await api(`/transparencia/opcoes?dataset=${ds === "*" ? "folha" : ds}`);
+    const o = await api(`/transparencia/opcoes?dataset=${ds === "*" ? "despesas" : ds}`);
     const snapshot = o.periodos.length === 0;
     const opts = o.periodos
       .map((p) => {
@@ -320,8 +357,35 @@ $("f-status").addEventListener("change", () => { docPage = 1; loadDocuments(); }
 
 // ---------- Loop ----------
 
+async function loadProgressoTarefas() {
+  try {
+    const p = await api("/progresso/tarefas");
+    if (!p.tarefas.length) { $("prog-tarefas").hidden = true; return; }
+    $("prog-tarefas").hidden = false;
+    const g = p.geral;
+    $("prog-geral").hidden = g.tarefas_rodando < 2;
+    if (g.tarefas_rodando >= 2) {
+      const pg = g.percentual ?? 0;
+      $("prog-geral-txt").textContent = `Geral: ${g.tarefas_rodando} tarefas rodando — ${g.concluidos} de ${g.total} itens`;
+      $("prog-geral-bar").style.width = pg + "%";
+      $("prog-geral-pct").textContent = pg + "%";
+    }
+    $("prog-tarefas-lista").innerHTML = p.tarefas
+      .map((t) => {
+        const feito = t.situacao === "COMPLETED";
+        const falhas = t.falhas ? ` · ${t.falhas} falha(s)` : "";
+        return `<div class="prog-item"><div class="prog-resumo"><span><b>${t.fonte}</b> <span class="hint">${t.descricao}</span></span>${badge(t.situacao)}</div>` +
+          `${t.percentual == null ? "" : barra(t.percentual, feito)}<div class="hint">${t.texto}${falhas}</div></div>`;
+      })
+      .join("");
+  } catch (err) {
+    $("prog-tarefas").hidden = true;
+  }
+}
+
 function refreshAll() {
   loadOverview();
+  loadProgressoTarefas();
   loadJobs();
   loadDocuments();
   // self-healing: o que falhar no boot (API ainda subindo) retenta aqui

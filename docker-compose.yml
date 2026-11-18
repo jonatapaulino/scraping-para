@@ -1,5 +1,6 @@
 services:
   rabbitmq:
+    restart: unless-stopped
     image: rabbitmq:3.13-management
     hostname: rabbitmq
     ports:
@@ -8,6 +9,8 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-scraper}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-scraper}
+      # tarefas longas (PNCP com muitos anexos) passam de 30 min -> 4h
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit consumer_timeout 14400000"
     healthcheck:
       test: rabbitmq-diagnostics -q ping
       interval: 10s
@@ -17,6 +20,7 @@ services:
       - rabbitmq-data:/var/lib/rabbitmq
 
   postgres:
+    restart: unless-stopped
     image: postgres:16-alpine
     ports:
       - "5432:5432"
@@ -33,6 +37,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   minio:
+    restart: unless-stopped
     image: bitnamilegacy/minio:latest
     ports:
       - "9000:9000"
@@ -45,6 +50,7 @@ services:
       - minio-data:/bitnami/minio/data
 
   browserless:
+    restart: unless-stopped
     image: browserless/chrome:latest
     environment:
       TOKEN: ${BROWSERLESS_TOKEN:-scraper}
@@ -53,6 +59,7 @@ services:
     shm_size: 1gb
 
   api:
+    restart: unless-stopped
     build: .
     command: python -m app.main
     env_file: .env
@@ -68,6 +75,7 @@ services:
 
   worker-discovery:
     build: .
+    restart: unless-stopped
     command: celery -A app.celery_app worker -Q q.discovery -c 2 -n discovery@%h --loglevel=INFO --max-tasks-per-child=200
     env_file: .env
     deploy:
@@ -82,6 +90,7 @@ services:
 
   worker-download:
     build: .
+    restart: unless-stopped
     command: celery -A app.celery_app worker -Q q.download -c 4 -n download@%h --loglevel=INFO --max-tasks-per-child=200
     env_file: .env
     volumes:
@@ -98,6 +107,7 @@ services:
         condition: service_started
 
   beat:
+    restart: unless-stopped
     build: .
     command: celery -A app.celery_app beat --loglevel=INFO
     env_file: .env
@@ -108,6 +118,7 @@ services:
         condition: service_healthy
 
   flower:
+    restart: unless-stopped
     build: .
     command: celery -A app.celery_app flower --port=5555 --loglevel=INFO
     env_file: .env

@@ -4,7 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Scraper Gov-PA — Painel</title>
-<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%233b82f6'/%3E%3Ctext x='32' y='47' font-size='42' font-family='Segoe UI,Arial,sans-serif' font-weight='700' text-anchor='middle' fill='white'%3ES%3C/text%3E%3C/svg%3E">
+<script>
+  // aplica o tema antes de pintar a pagina (sem "piscar"): auto | claro | escuro
+  function aplicarTema(escolha) {
+    var claro = escolha === "claro" || (escolha !== "escuro" && window.matchMedia("(prefers-color-scheme: light)").matches);
+    document.documentElement.setAttribute("data-tema", claro ? "claro" : "escuro");
+  }
+  var _tema = "auto";
+  try { _tema = localStorage.getItem("tema") || "auto"; } catch (e) {}
+  aplicarTema(_tema);
+</script>
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
 <header>
@@ -14,7 +25,8 @@
   </div>
   <div class="header-right">
     <span id="api-status" class="pill off">API offline</span>
-    <label class="autorefresh"><input type="checkbox" id="autorefresh" checked> auto-refresh 5s</label>
+    <label class="autorefresh">tema: <select id="tema" title="Aparência do painel"><option value="auto">automático</option><option value="claro">claro</option><option value="escuro">escuro</option></select></label>
+    <label class="autorefresh"><input type="checkbox" id="autorefresh" checked> atualizar sozinho (5s)</label>
   </div>
 </header>
 
@@ -22,11 +34,20 @@
   <section class="cards" id="overview-cards">
     <div class="card"><span class="card-label">Fila Discovery</span><span class="card-value" id="q-discovery">–</span></div>
     <div class="card"><span class="card-label">Fila Download</span><span class="card-value" id="q-download">–</span></div>
-    <div class="card warn"><span class="card-label">Dead Letters</span><span class="card-value" id="q-dead">–</span><button id="btn-requeue" class="mini" title="Republica as dead letters na fila original">reprocessar</button></div>
+    <div class="card warn"><span class="card-label">Fila de erros</span><span class="card-value" id="q-dead">–</span><button id="btn-requeue" class="mini" title="Republica as dead letters na fila original">reprocessar</button></div>
     <div class="card"><span class="card-label">PDFs baixados</span><span class="card-value" id="docs-ok">–</span></div>
     <div class="card"><span class="card-label">Falhas</span><span class="card-value" id="docs-fail">–</span></div>
     <div class="card"><span class="card-label">Últimas 24h</span><span class="card-value small" id="docs-24h">–</span></div>
-    <div class="card"><span class="card-label">Jobs rodando</span><span class="card-value" id="jobs-running">–</span></div>
+    <div class="card"><span class="card-label">Tarefas rodando</span><span class="card-value" id="jobs-running">–</span></div>
+  </section>
+
+  <section class="panel" id="prog-tarefas" hidden>
+    <h2>Tarefas em andamento</h2>
+    <div id="prog-geral" hidden>
+      <div class="prog-resumo"><span id="prog-geral-txt">–</span></div>
+      <div class="barra-linha"><div class="bar big"><div class="bar-fill" id="prog-geral-bar" style="width:0%"></div></div><span class="bar-pct" id="prog-geral-pct">0%</span></div>
+    </div>
+    <div id="prog-tarefas-lista"></div>
   </section>
 
   <section class="panel">
@@ -36,7 +57,7 @@
       <div class="start-actions">
         <label title="Ignora páginas já visitadas e reprocessa tudo do zero"><input type="checkbox" id="force"> forçar raspagem completa</label>
         <label title="Vazio = usa a profundidade cadastrada na secretaria (ou o padrão do sistema)">profundidade: <input type="number" id="max-depth" placeholder="padrão" min="0" max="10" style="width:70px"></label>
-        <button id="btn-start" class="primary">Disparar job</button>
+        <button id="btn-start" class="primary">Iniciar tarefa</button>
       </div>
     </div>
     <div id="start-result" class="result"></div>
@@ -62,6 +83,7 @@
           <option value="transf_voluntarias">convênios (instrumentos)</option>
           <option value="licitacoes">licitações (de convênios)</option>
           <option value="pncp_contratos">contratos — PNCP</option>
+          <option value="diario_oficial">Diário Oficial do Estado (IOEPA)</option>
         </select></label>
         <label>de: <select id="folha-de"></select></label>
         <label>até: <select id="folha-ate"></select></label>
@@ -84,10 +106,10 @@
 
   <div class="grid-2">
     <section class="panel">
-      <h2>Jobs recentes</h2>
+      <h2>Tarefas recentes</h2>
       <table>
-        <thead><tr><th>Job</th><th>Secretaria</th><th>Status</th><th>PDFs</th><th>OK</th><th>Falhas</th><th>Início</th></tr></thead>
-        <tbody id="jobs-tbody"><tr><td colspan="7" class="empty">carregando…</td></tr></tbody>
+        <thead><tr><th>Tarefa</th><th>Fonte</th><th>Situação</th><th>Progresso</th><th>Itens</th><th>OK</th><th>Falhas</th><th>Início</th></tr></thead>
+        <tbody id="jobs-tbody"><tr><td colspan="8" class="empty">carregando…</td></tr></tbody>
       </table>
     </section>
 
@@ -100,6 +122,8 @@
       <form id="sec-form" class="inline-form">
         <input id="sec-sigla" placeholder="SIGLA" maxlength="20" required>
         <input id="sec-url" placeholder="https://portal.pa.gov.br/..." maxlength="255" required>
+        <input id="sec-depth" type="number" min="0" max="10" placeholder="depth (padrão)" title="Profundidade do crawl: cliques da página cadastrada até o link do PDF. Vazio = padrão." style="width:9rem">
+        <label class="nowrap" title="Dispara a raspagem logo após cadastrar"><input id="sec-run" type="checkbox"> raspar agora</label>
         <button class="primary">+ Adicionar</button>
       </form>
     </section>
@@ -111,13 +135,13 @@
       <div class="filters">
         <select id="f-sec"><option value="">Todas secretarias</option></select>
         <select id="f-status">
-          <option value="">Todos status</option>
-          <option>SUCCESS</option><option>PENDING</option><option>FAILED</option>
+          <option value="">Todas as situações</option>
+          <option value="SUCCESS">Sucesso</option><option value="PENDING">Pendente</option><option value="FAILED">Falhou</option>
         </select>
       </div>
     </div>
     <table>
-      <thead><tr><th>URL</th><th>Status</th><th>Magic ✓</th><th>Tamanho</th><th>SHA-256</th><th>MinIO</th><th>Criado</th></tr></thead>
+      <thead><tr><th>URL</th><th>Situação</th><th>PDF válido ✓</th><th>Tamanho</th><th>SHA-256</th><th>MinIO</th><th>Criado</th></tr></thead>
       <tbody id="docs-tbody"><tr><td colspan="7" class="empty">carregando…</td></tr></tbody>
     </table>
     <div class="pagination">
@@ -129,6 +153,6 @@
 </main>
 
 <div id="toast"></div>
-<script src="app.js"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

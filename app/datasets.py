@@ -16,7 +16,7 @@ import re
 import time
 from datetime import datetime
 from typing import Iterator, Optional
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from app import config, http_client
 from app.folha import _cached
@@ -699,3 +699,72 @@ def pncp_contratos_docs(recorte: dict, siglas: list | None):
                     "nome": titulo,
                 }
             time.sleep(config.FOLHA_PAGE_DELAY_SECONDS)
+
+
+# ============ DIARIO OFICIAL DO ESTADO (IOEPA) ============
+# O Diario Oficial do Para e publicado pela Imprensa Oficial (IOEPA) como PDFs
+# soltos em /pages/<ano>/ (listagem de diretorio aberta): AAAA.MM.DD.DOE.pdf
+# (edicao normal), .EXTRA.pdf, .suplemento.pdf... Granularidade = ano.
+# iter_docs baixa os PDFs; iter_rows gera o indice (CSV) das edicoes do ano.
+DOE_SIGLA = "IOEPA"
+_DOE_LINHA = re.compile(
+    r'(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s+(\d+)\s*'
+    r'<A HREF="(/pages/\d{4}/[^"/]+\.pdf)"',
+    re.IGNORECASE,
+)
+
+
+def diario_periods():
+    return [{"ano": a, "mes": None} for a in range(2008, datetime.now().year + 1)]
+
+
+def diario_orgaos(ano, mes):
+    return [{"sigla": DOE_SIGLA, "orgao": "Imprensa Oficial do Estado — Diario Oficial"}]
+
+
+def _diario_edicoes(ano: int) -> list[dict]:
+    """Edicoes do ano lidas da listagem de diretorio da IOEPA (cacheado)."""
+
+    def _get():
+        with http_client.new_client(timeout=config.HTTP_TIMEOUT_SECONDS * 2) as c:
+            resp = c.get(f"{config.IOEPA_BASE}/pages/{ano}/")
+            resp.raise_for_status()
+            html = resp.content.decode("latin-1")
+        out = []
+        for data, hora, tam, path in _DOE_LINHA.findall(html):
+            arquivo = unquote(path.rsplit("/", 1)[-1])
+            m = re.match(r"(\d{4})\.(\d{2})\.(\d{2})(.*)\.pdf$", arquivo, re.IGNORECASE)
+            out.append({
+                "ano": ano,
+                "data_edicao": f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else "",
+                "tipo": (m.group(4).strip(".") or "DOE") if m else "",
+                "arquivo": arquivo,
+                "tamanho_bytes": int(tam),
+                "modificado_em": f"{data} {hora}",
+                "url": f"{config.IOEPA_BASE}{path}",
+            })
+        return sorted(out, key=lambda r: (r["data_edicao"], r["arquivo"]))
+
+    return _cached(f"doe:{ano}", _get)
+
+
+def _diario_alvo(siglas) -> bool:
+    return not siglas or DOE_SIGLA in {str(s).upper() for s in siglas}
+
+
+def diario_iter(recorte, siglas):
+    if not _diario_alvo(siglas):
+        return
+    yield from _diario_edicoes(recorte["ano"])
+
+
+def diario_docs(recorte, siglas):
+    if not _diario_alvo(siglas):
+        return
+    for ed in _diario_edicoes(recorte["ano"]):
+        yield {
+            "url": ed["url"],
+            "orgao": DOE_SIGLA,
+            "sub": str(ed["ano"]),
+            "nome": ed["arquivo"],
+        }
