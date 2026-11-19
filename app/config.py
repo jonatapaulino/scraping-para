@@ -75,6 +75,8 @@ RECONCILE_CRON = os.getenv("RECONCILE_CRON", "*/30 * * * *")
 
 # Crawl diario das secretarias cadastradas (Beat). Desligue para rodar so as
 # coletas automaticas de dados abertos abaixo.
+# Fuso para o horario das agendas por fonte (Para: UTC-3, sem horario de verao)
+AGENDA_UTC_OFFSET_HORAS = _int("AGENDA_UTC_OFFSET_HORAS", -3)
 BEAT_CRAWL_ENABLED = os.getenv("BEAT_CRAWL_ENABLED", "true").lower() == "true"
 
 # Coleta automatica de datasets (API/PNCP/Diario). Horarios em UTC (BRT = UTC-3).

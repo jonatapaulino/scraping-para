@@ -84,7 +84,11 @@ Para sites que não são só lista de PDFs — painel, seção **⚙ Fonte de da
 - **Cabeçalhos** (avançado): `Authorization: Bearer …` etc.
 - Use **🔍 Testar** antes de salvar: mostra colunas e amostra sem gravar nada.
 - Saída: um CSV por coleta em `downloads/<sigla>/<ano>/<sigla>-<data_hora>.csv` + MinIO. Conteúdo idêntico ao da coleta anterior não gera arquivo novo.
-- Fontes de coleta **ativas entram na rodada diária** do Beat (como os portais); desative para tirar.
+- Para rodar todo dia sozinha, use a **⏰ Agenda diária** da fonte (ver abaixo).
+
+### Agenda diária por fonte
+
+Na tabela *Secretarias*, coluna **⏰ Agenda diária**: marque a caixa da fonte (portal de PDFs ou fonte de coleta) e escolha o horário — ela é raspada todo dia nesse horário (fuso `AGENDA_UTC_OFFSET_HORAS`, padrão `-3`, Brasília/Pará). O Beat confere a cada 5 minutos; se o computador/Docker estava desligado na hora, a fonte roda assim que ele voltar (uma vez por dia). Fonte desativada não roda. O **IOEPA (Diário Oficial)** também pode ser agendado: a cada dia coleta o ano corrente e baixa só as edições novas. Fontes com agenda própria ficam fora da rodada global (`CELERY_BEAT_CRON`/`BEAT_CRAWL_ENABLED`), para não rodar duas vezes.
 
 ### Profundidade (depth)
 

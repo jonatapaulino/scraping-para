@@ -42,5 +42,10 @@ Seção **Dados abertos**: escolha o dataset, o período e os órgãos (ou *todo
 ## Onde ficam os arquivos
 `downloads/<sigla>/<ano>/…` no computador (e cópia no MinIO, console em http://localhost:9001).
 
-## Automático
-Fontes ativas rodam sozinhas todo dia às 6h; só vem o que for novo.
+## Agendar raspagem diária
+Na tabela **Secretarias**, coluna **⏰ Agenda diária**: marque a caixa da fonte e escolha o horário (Brasília).
+- Roda todo dia nesse horário; só vem o que for novo.
+- Se o computador/Docker estiver desligado na hora, roda assim que voltar.
+- Desmarque a caixa para parar. Fonte desativada também não roda.
+- Vale para portais, fontes de coleta e para o **IOEPA (Diário Oficial)** — nele, todo dia baixa só as edições novas do ano corrente.
+- O Docker precisa estar ligado para a agenda funcionar.

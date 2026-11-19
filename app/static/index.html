@@ -150,9 +150,10 @@
     <section class="panel">
       <h2>Secretarias</h2>
       <table>
-        <thead><tr><th>Sigla</th><th>URL base</th><th>Depth</th><th title="Quais PDFs baixar nesta fonte">PDFs</th><th>Ativa</th><th>Ações</th><th>Tipo</th></tr></thead>
-        <tbody id="secs-tbody"><tr><td colspan="7" class="empty">carregando…</td></tr></tbody>
+        <thead><tr><th>Sigla</th><th>URL base</th><th>Depth</th><th title="Quais PDFs baixar nesta fonte">PDFs</th><th>Ativa</th><th title="Raspar esta fonte todo dia, no horário escolhido">⏰ Agenda diária</th><th>Ações</th><th>Tipo</th></tr></thead>
+        <tbody id="secs-tbody"><tr><td colspan="8" class="empty">carregando…</td></tr></tbody>
       </table>
+      <p class="hint">⏰ <b>Agenda diária</b>: marque a caixa da fonte que deve ser raspada todo dia e escolha o horário (horário de Brasília). Se o computador/Docker estiver desligado na hora, ela roda assim que voltar. Fonte desativada não roda.</p>
       <form id="sec-form" class="inline-form">
         <input id="sec-sigla" placeholder="SIGLA" maxlength="20" required>
         <input id="sec-url" placeholder="https://portal.pa.gov.br/..." maxlength="255" required>
@@ -188,6 +189,6 @@
 </main>
 
 <div id="toast"></div>
-<script src="app.js?v=15"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>

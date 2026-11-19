@@ -300,8 +300,22 @@ def update_secretaria(sec_id: uuid.UUID, req: SecretariaUpdate, s: Session = Dep
     sec = s.get(Secretaria, sec_id)
     if sec is None:
         raise HTTPException(404, "Secretaria nao encontrada")
-    for field, value in req.model_dump(exclude_unset=True).items():
+    dados = req.model_dump(exclude_unset=True)
+    if dados.get("agendada") or "agenda_hora" in dados:
+        if sec.tipo not in ("crawl", "coleta") and sec.sigla not in _FONTES_DATASET:
+            raise HTTPException(
+                400, f"'{sec.sigla}' nao pode ser agendada (so portais, fontes de coleta e o Diario Oficial)"
+            )
+    if dados.get("agendada") is None:
+        dados.pop("agendada", None)
+    if dados.get("agenda_hora") is None:
+        dados.pop("agenda_hora", None)
+    estava_agendada = sec.agendada
+    for field, value in dados.items():
         setattr(sec, field, value)
+    if sec.agendada and (not estava_agendada or "agenda_hora" in dados):
+        # ligou a agenda ou mudou o horario: so vale a partir de agora
+        sec.agendada_em = datetime.now(timezone.utc)
     s.commit()
     s.refresh(sec)
     return sec

@@ -122,6 +122,12 @@ async function loadSecretarias() {
               (s.pdf_filtro === null ? "padrão" : s.pdf_filtro === "" ? "todos" : `<code title="${s.pdf_filtro.replace(/"/g, "&quot;")}">regex</code>`)
             } ${s.tipo === "crawl" ? `<button class="mini" data-filtro-id="${s.id}" data-filtro="${(s.pdf_filtro ?? "").replace(/"/g, "&quot;")}" data-filtro-null="${s.pdf_filtro === null}" title="Editar filtro de PDFs">✎</button>` : ""}</td>` +
             `<td>${s.is_ativa ? "✅" : "—"}</td>` +
+            `<td class="nowrap">${
+              s.tipo === "crawl" || s.tipo === "coleta" || s.sigla === "IOEPA"
+                ? `<input type="checkbox" data-agenda-id="${s.id}" ${s.agendada ? "checked" : ""} title="Raspar todo dia"> ` +
+                  `<input type="time" data-hora-id="${s.id}" value="${s.agenda_hora || "06:00"}" ${s.agendada ? "" : "disabled"} style="width:6.5rem">`
+                : "—"
+            }</td>` +
             `<td><button class="mini" data-toggle-id="${s.id}" data-ativa="${s.is_ativa}">${
               s.is_ativa ? "desativar" : "reativar"
             }</button>${
@@ -130,7 +136,7 @@ async function loadSecretarias() {
             `<td class="nowrap">${s.tipo === "crawl" ? "" : s.tipo === "coleta" ? `<span class="badge COLETA">Coleta</span>` : `<span class="badge API">${s.sigla === "IOEPA" ? "Diário" : "API"}</span>`}</td></tr>`
         )
         .join("")
-    : '<tr><td colspan="7" class="empty">vazio</td></tr>';
+    : '<tr><td colspan="8" class="empty">vazio</td></tr>';
   const sel = $("f-sec");
   const cur = sel.value;
   sel.innerHTML =
@@ -139,6 +145,35 @@ async function loadSecretarias() {
   sel.value = cur;
   secsLoaded = true;
 }
+
+// agenda diária: caixa liga/desliga, campo de hora muda o horário
+$("secs-tbody").addEventListener("change", async (e) => {
+  const t = e.target;
+  const id = t.dataset.agendaId || t.dataset.horaId;
+  if (!id) return;
+  const hora = document.querySelector(`input[data-hora-id="${id}"]`);
+  const patch = (body) =>
+    api(`/secretarias/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    if (t.dataset.agendaId) {
+      await patch(t.checked ? { agendada: true, agenda_hora: hora.value || "06:00" } : { agendada: false });
+      hora.disabled = !t.checked;
+      toast(t.checked ? `Agendada: todo dia às ${hora.value || "06:00"}` : "Agenda desligada");
+    } else {
+      if (!t.value) return;
+      await patch({ agenda_hora: t.value });
+      toast(`Horário alterado: todo dia às ${t.value}`);
+    }
+    loadSecretarias();
+  } catch (err) {
+    toast(err.message, true);
+    loadSecretarias();
+  }
+});
 
 $("secs-tbody").addEventListener("click", async (e) => {
   const btn = e.target.closest("button");

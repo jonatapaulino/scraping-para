@@ -139,11 +139,30 @@ class ColetaIn(ColetaConfig):
     is_ativa: bool = True
 
 
+_HORA_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _check_hora(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return v
+    v = v.strip()
+    if not _HORA_RE.match(v):
+        raise ValueError("Horario invalido — use HH:MM (ex.: 06:30)")
+    return v
+
+
 class SecretariaUpdate(BaseModel):
     url_base: Optional[str] = Field(default=None, max_length=255)
     is_ativa: Optional[bool] = None
     max_depth: Optional[int] = Field(default=None, ge=0, le=10)
     pdf_filtro: Optional[str] = Field(default=None, max_length=255)
+    agendada: Optional[bool] = None
+    agenda_hora: Optional[str] = Field(default=None, max_length=5)
+
+    @field_validator("agenda_hora")
+    @classmethod
+    def _hora_ok(cls, v: Optional[str]) -> Optional[str]:
+        return _check_hora(v)
 
     @field_validator("pdf_filtro")
     @classmethod
@@ -167,3 +186,5 @@ class SecretariaOut(BaseModel):
     tipo: str
     pdf_filtro: Optional[str] = None
     coleta: Optional[dict] = None
+    agendada: bool = False
+    agenda_hora: str = "06:00"

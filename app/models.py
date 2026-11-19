@@ -39,6 +39,13 @@ class Secretaria(Base):
     pdf_filtro: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # tipo 'coleta': configuracao (JSON) da fonte generica cadastrada pelo painel
     coleta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Agenda diaria escolhida no painel: raspa a fonte todo dia em `agenda_hora`
+    # (HH:MM, fuso AGENDA_UTC_OFFSET_HORAS). Se o sistema estiver desligado na
+    # hora, roda assim que voltar. `agendada_em` evita disparar um horario que
+    # ja tinha passado quando a agenda foi ligada.
+    agendada: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    agenda_hora: Mapped[str] = mapped_column(String(5), default="06:00", server_default="06:00")
+    agendada_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @property
     def coleta(self) -> dict | None:

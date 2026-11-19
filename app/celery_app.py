@@ -41,6 +41,7 @@ celery.conf.update(
         "app.tasks.fetch_dataset_mes": {"queue": config.Q_DOWNLOAD},
         "app.tasks.dispatch_datasets_scheduled": {"queue": config.Q_DISCOVERY},
         "app.tasks.coletar_fonte": {"queue": config.Q_DOWNLOAD},
+        "app.tasks.dispatch_agendadas": {"queue": config.Q_DISCOVERY},
     },
     task_acks_late=True,
     task_reject_on_worker_lost=True,
@@ -81,6 +82,11 @@ def _beat_schedule() -> dict:
                     "schedule": c,
                     "args": (grupo,),
                 }
+    # agendas por fonte (painel): confere a cada 5 min quem ja esta na hora
+    schedule["dispatch-agendadas"] = {
+        "task": "app.tasks.dispatch_agendadas",
+        "schedule": crontab(minute="*/5"),
+    }
     reconcile = _cron(config.RECONCILE_CRON)
     if reconcile:
         schedule["reconcile-stalled"] = {

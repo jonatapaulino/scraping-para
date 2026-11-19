@@ -699,7 +699,8 @@ def dispatch_scheduled():
     with SessionLocal() as s:
         ativas = s.execute(
             select(Secretaria).where(
-                Secretaria.is_ativa.is_(True), Secretaria.tipo == "crawl"
+                Secretaria.is_ativa.is_(True), Secretaria.tipo == "crawl",
+                Secretaria.agendada.is_(False),
             )
         ).scalars().all()
         ok = 0
@@ -712,7 +713,8 @@ def dispatch_scheduled():
         log.info("Beat: %d/%d jobs disparados", ok, len(ativas))
         coletas = s.execute(
             select(Secretaria).where(
-                Secretaria.is_ativa.is_(True), Secretaria.tipo == "coleta"
+                Secretaria.is_ativa.is_(True), Secretaria.tipo == "coleta",
+                Secretaria.agendada.is_(False),
             )
         ).scalars().all()
         for sec in coletas:
@@ -721,6 +723,65 @@ def dispatch_scheduled():
             except Exception:
                 log.exception("Beat: falha ao disparar coleta de %s", sec.sigla)
     return ok
+
+
+def _slot_agenda(agora_utc: datetime, hora: str) -> datetime:
+    """Horario de HOJE (em UTC) da agenda `hora` (HH:MM no fuso configurado)."""
+    off = timedelta(hours=config.AGENDA_UTC_OFFSET_HORAS)
+    local = agora_utc + off
+    h, m = (int(x) for x in hora.split(":"))
+    return local.replace(hour=h, minute=m, second=0, microsecond=0) - off
+
+
+@celery.task
+def dispatch_agendadas(agora: str | None = None):
+    """Beat (a cada 5 min): dispara as fontes que o usuario agendou no painel.
+
+    Uma fonte roda quando o horario de hoje ja passou, nenhuma tarefa dela
+    comecou desde esse horario e a agenda ja estava ligada nele — assim, se o
+    computador estava desligado na hora, ela roda ao voltar (uma vez so)."""
+    agora_utc = datetime.fromisoformat(agora) if agora else datetime.now(timezone.utc)
+    disparadas = 0
+    with SessionLocal() as s:
+        fontes = s.execute(
+            select(Secretaria).where(
+                Secretaria.agendada.is_(True),
+                Secretaria.is_ativa.is_(True),
+                Secretaria.tipo.in_(("crawl", "coleta"))
+                | (Secretaria.sigla == "IOEPA"),  # Diario Oficial: fonte "virtual"
+            )
+        ).scalars().all()
+        for sec in fontes:
+            slot = _slot_agenda(agora_utc, sec.agenda_hora or "06:00")
+            if agora_utc < slot:
+                continue  # ainda nao deu a hora de hoje
+            if sec.agendada_em and sec.agendada_em > slot:
+                continue  # agenda ligada depois do horario de hoje: comeca amanha
+            # o job do Diario fica sob a fonte TRANSPARENCIA (tipo 'diario_oficial')
+            filtro_job = (
+                ScrapingJob.tipo == "diario_oficial"
+                if sec.sigla == "IOEPA"
+                else ScrapingJob.secretaria_id == sec.id
+            )
+            ja_rodou = s.execute(
+                select(func.count(ScrapingJob.id)).where(filtro_job, ScrapingJob.started_at >= slot)
+            ).scalar_one()
+            if ja_rodou:
+                continue
+            try:
+                if sec.sigla == "IOEPA":
+                    # so o ano corrente; edicoes ja baixadas sao puladas (force = ignora o dedup do periodo)
+                    ano = (agora_utc + timedelta(hours=config.AGENDA_UTC_OFFSET_HORAS)).year
+                    start_dataset_job(s, "diario_oficial", ano, 1, ano, 12, None, force=True)
+                elif sec.tipo == "coleta":
+                    start_coleta_job(s, sec)
+                else:
+                    start_job_for_secretaria(s, sec, force_full_scrape=False)
+                disparadas += 1
+                log.info("Agenda: %s disparada (horario %s)", sec.sigla, sec.agenda_hora)
+            except Exception:
+                log.exception("Agenda: falha ao disparar %s", sec.sigla)
+    return disparadas
 
 
 @celery.task
