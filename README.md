@@ -70,6 +70,22 @@ docker compose up -d --build
 3. **Acompanhar** — *Jobs recentes*: `RUNNING` → `COMPLETED`. Arquivos caem em `downloads/<sigla>/<ano>/`.
 4. **Automático** — secretarias ativas entram na rodada do Beat (`CELERY_BEAT_CRON`, padrão 6h da manhã). Deduplicação por URL/SHA-256 garante só documentos novos.
 
+### Filtro de PDFs (por fonte)
+
+Por padrão o crawl só baixa PDFs com cara de material financeiro (`CRAWL_PDF_ALLOW`: edital, contrato, convênio…). Portais de **folha/remuneração** etc. ficam de fora — nesses casos defina o filtro da fonte no painel (campo *PDFs* ao cadastrar, ou ✎ na tabela): vazio = padrão · `*` = todos os PDFs do site · ou uma regex (ex.: `remunera|inativ`). Vale a partir da próxima tarefa.
+
+### Fonte de dados genérica (qualquer site, sem código)
+
+Para sites que não são só lista de PDFs — painel, seção **⚙ Fonte de dados**:
+
+- **API / JSON**: a URL devolve JSON; a lista de registros é achada sozinha (ou informe o caminho, ex.: `dados.itens`). Objetos aninhados viram colunas (`a.b`).
+- **Página com tabela (HTML)**: vira linhas/colunas (a maior tabela da página, ou o seletor CSS informado). Links dentro das células ganham uma coluna extra `<coluna> (link)`. Marque *página com JavaScript* se a tabela só aparece com JS (usa o Chrome headless).
+- **Paginação**: ponha `{page}` na URL (`https://x/api?pagina={page}`); anda até vir vazia/repetida ou até *páginas*.
+- **Cabeçalhos** (avançado): `Authorization: Bearer …` etc.
+- Use **🔍 Testar** antes de salvar: mostra colunas e amostra sem gravar nada.
+- Saída: um CSV por coleta em `downloads/<sigla>/<ano>/<sigla>-<data_hora>.csv` + MinIO. Conteúdo idêntico ao da coleta anterior não gera arquivo novo.
+- Fontes de coleta **ativas entram na rodada diária** do Beat (como os portais); desative para tirar.
+
 ### Profundidade (depth)
 
 Distância em cliques da página cadastrada até a página que contém o link do PDF:
@@ -97,7 +113,13 @@ docker compose up -d --scale worker-discovery=4 --scale worker-download=8
 | `GET /api/v1/documents` | Paginado; filtros `secretaria_id`, `status_download` |
 | `GET /api/v1/documents/{id}/file` | Abre o PDF (proxy do MinIO) |
 | `GET/POST /api/v1/secretarias` | Lista / cadastra secretarias |
-| `PATCH /api/v1/secretarias/{id}` | Ativa/desativa, edita `url_base` e `max_depth` |
+| `PATCH /api/v1/secretarias/{id}` | Ativa/desativa, edita `url_base`, `max_depth` e `pdf_filtro` |
+| `DELETE /api/v1/secretarias/{id}` | Exclui a fonte e o histórico no banco (arquivos baixados ficam); recusa fontes do sistema e fontes com tarefa rodando |
+| `POST /api/v1/coletas/testar` | Pré-visualiza uma fonte genérica (1ª página, sem gravar): colunas + primeiras linhas |
+| `POST /api/v1/coletas` / `PUT /api/v1/coletas/{id}` | Cadastra / edita uma fonte genérica (`url`, `modo`, `caminho`, `max_paginas`, …) |
+| `POST /api/v1/jobs/{id}/cancel` | Cancela job em andamento (`CANCELLED`); descarta pendentes e as tarefas ainda na fila viram no-op |
+| `GET /api/v1/jobs/{id}/download` | `.zip` com todos os arquivos (PDF/CSV) baixados pelo job |
+| `GET /api/v1/documents/{id}/file?download=true` | Baixa o arquivo (sem o parâmetro, abre no navegador) |
 | `POST /api/v1/dead-letters/requeue` | Republica a `q.dead` na fila original |
 | `GET /api/v1/transparencia/opcoes?dataset=` | Períodos publicados + órgãos do dataset |
 | `POST /api/v1/transparencia/start` | `{"dataset": "despesas", "ano_ini": 2025, "mes_ini": 1, "ano_fim": 2025, "mes_fim": 3, "orgaos": ["SESPA"]}` → 202 (orgaos nulo = todos; siglas, não ids) |

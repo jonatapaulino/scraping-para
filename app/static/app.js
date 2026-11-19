@@ -7,7 +7,7 @@ const $ = (id) => document.getElementById(id);
 const fmtDate = (s) => (s ? new Date(s).toLocaleString("pt-BR") : "—");
 const fmtBytes = (n) =>
   n == null ? "—" : n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? (n / 1e3).toFixed(1) + " KB" : n + " B";
-const ROTULOS = { RUNNING: "Em andamento", COMPLETED: "Concluído", FAILED: "Falhou", SUCCESS: "Sucesso", PENDING: "Pendente" };
+const ROTULOS = { RUNNING: "Em andamento", COMPLETED: "Concluído", FAILED: "Falhou", CANCELLED: "Cancelado", SUCCESS: "Sucesso", PENDING: "Pendente" };
 const badge = (st) => `<span class="badge ${st}">${ROTULOS[st] || st}</span>`;
 const barra = (pct, feito) =>
   `<div class="barra-linha"><div class="bar"><div class="bar-fill${feito ? " done" : ""}" style="width:${pct}%"></div></div><span class="bar-pct">${pct}%</span></div>`;
@@ -16,7 +16,10 @@ async function api(path, opts) {
   const r = await fetch(API + path, opts);
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
-    throw new Error(body.detail || `HTTP ${r.status}`);
+    const d = body.detail;
+    // 422 do FastAPI manda uma lista de erros de validacao
+    const msg = Array.isArray(d) ? d.map((x) => (x.msg || "").replace(/^Value error, /, "")).join("; ") : d;
+    throw new Error(msg || `HTTP ${r.status}`);
   }
   return r.status === 204 ? null : r.json();
 }
@@ -99,9 +102,9 @@ async function loadSecretarias() {
     ? secretariasCache
         .map(
           (s) =>
-            `<label title="${s.tipo === 'crawl' ? s.url_base : (s.sigla === 'IOEPA' ? 'Diário Oficial do Estado — escolha os anos ao lado' : 'fonte de API — use a seção Folha')}"><input type="checkbox" value="${s.sigla}" ${
-              s.is_ativa && (s.tipo === "crawl" || s.sigla === "IOEPA") ? "" : "disabled"
-            }> ${s.sigla}${s.is_ativa ? "" : " (inativa)"}${s.tipo === "crawl" ? "" : s.sigla === "IOEPA" ? " (Diário Oficial)" : " (API)"}</label>`
+            `<label title="${s.tipo === 'crawl' || s.tipo === 'coleta' ? s.url_base : (s.sigla === 'IOEPA' ? 'Diário Oficial do Estado — escolha os anos ao lado' : 'fonte de API — use a seção Folha')}"><input type="checkbox" value="${s.sigla}" ${
+              s.is_ativa && (s.tipo === "crawl" || s.tipo === "coleta" || s.sigla === "IOEPA") ? "" : "disabled"
+            }> ${s.sigla}${s.is_ativa ? "" : " (inativa)"}${s.tipo === "crawl" ? "" : s.tipo === "coleta" ? " (coleta)" : s.sigla === "IOEPA" ? " (Diário Oficial)" : " (API)"}</label>`
         )
         .join("")
     : '<span class="empty">nenhuma cadastrada</span>';
@@ -109,16 +112,25 @@ async function loadSecretarias() {
     ? secretariasCache
         .map(
           (s) =>
-            `<tr><td class="nowrap"><b>${s.sigla}</b></td><td class="url">${s.url_base}</td>` +
-            `<td class="nowrap">${s.max_depth ?? "padrão"} <button class="mini" data-depth-id="${s.id}" data-depth="${s.max_depth ?? ""}" title="Editar profundidade">✎</button></td>` +
+            `<tr><td class="nowrap"><b>${s.sigla}</b></td><td class="url">${s.url_base}${
+              s.tipo === "crawl" ? ` <button class="mini" data-url-id="${s.id}" data-url="${s.url_base}" title="Editar URL">✎</button>`
+              : s.tipo === "coleta" ? ` <button class="mini" data-coleta-id="${s.id}" title="Editar a configuração desta fonte (abre o formulário acima)">✎ config</button>` : ""
+            }</td>` +
+            `<td class="nowrap">${s.tipo === "coleta" ? "—" : `${s.max_depth ?? "padrão"} <button class="mini" data-depth-id="${s.id}" data-depth="${s.max_depth ?? ""}" title="Editar profundidade">✎</button>`}</td>` +
+            `<td class="nowrap">${
+              s.tipo === "coleta" ? "CSV" : s.tipo !== "crawl" ? "" :
+              (s.pdf_filtro === null ? "padrão" : s.pdf_filtro === "" ? "todos" : `<code title="${s.pdf_filtro.replace(/"/g, "&quot;")}">regex</code>`)
+            } ${s.tipo === "crawl" ? `<button class="mini" data-filtro-id="${s.id}" data-filtro="${(s.pdf_filtro ?? "").replace(/"/g, "&quot;")}" data-filtro-null="${s.pdf_filtro === null}" title="Editar filtro de PDFs">✎</button>` : ""}</td>` +
             `<td>${s.is_ativa ? "✅" : "—"}</td>` +
             `<td><button class="mini" data-toggle-id="${s.id}" data-ativa="${s.is_ativa}">${
               s.is_ativa ? "desativar" : "reativar"
-            }</button></td>` +
-            `<td class="nowrap">${s.tipo === "crawl" ? "" : `<span class="badge API">${s.sigla === "IOEPA" ? "Diário" : "API"}</span>`}</td></tr>`
+            }</button>${
+              s.tipo === "crawl" || s.tipo === "coleta" ? ` <button class="mini" data-del-id="${s.id}" data-sigla="${s.sigla}" title="Excluir fonte e histórico (os arquivos baixados ficam)">excluir</button>` : ""
+            }</td>` +
+            `<td class="nowrap">${s.tipo === "crawl" ? "" : s.tipo === "coleta" ? `<span class="badge COLETA">Coleta</span>` : `<span class="badge API">${s.sigla === "IOEPA" ? "Diário" : "API"}</span>`}</td></tr>`
         )
         .join("")
-    : '<tr><td colspan="6" class="empty">vazio</td></tr>';
+    : '<tr><td colspan="7" class="empty">vazio</td></tr>';
   const sel = $("f-sec");
   const cur = sel.value;
   sel.innerHTML =
@@ -140,6 +152,34 @@ $("secs-tbody").addEventListener("click", async (e) => {
       });
       toast("Secretaria atualizada");
       loadSecretarias();
+    } else if (btn.dataset.coletaId) {
+      editarColeta(btn.dataset.coletaId);
+    } else if (btn.dataset.urlId) {
+      const v = prompt("Nova URL base", btn.dataset.url);
+      if (v === null || !v.trim() || v.trim() === btn.dataset.url) return;
+      await api(`/secretarias/${btn.dataset.urlId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url_base: v.trim() }),
+      });
+      toast("URL atualizada");
+      loadSecretarias();
+    } else if (btn.dataset.filtroId) {
+      const atual = btn.dataset.filtroNull === "true" ? "" : (btn.dataset.filtro === "" ? "*" : btn.dataset.filtro);
+      const v = prompt("Quais PDFs baixar?\n• vazio = padrão do sistema (só financeiros: editais, contratos…)\n• * = todos os PDFs do site\n• ou uma regex, ex.: remunera|inativ", atual);
+      if (v === null) return;
+      await api(`/secretarias/${btn.dataset.filtroId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdf_filtro: v.trim() === "" ? null : v.trim() }),
+      });
+      toast("Filtro atualizado — vale a partir da próxima tarefa");
+      loadSecretarias();
+    } else if (btn.dataset.delId) {
+      if (!confirm(`Excluir ${btn.dataset.sigla}? Remove a fonte e o histórico dela do painel. Os arquivos já baixados NÃO são apagados.`)) return;
+      const r = await api(`/secretarias/${btn.dataset.delId}`, { method: "DELETE" });
+      toast(`${r.excluida} excluída (${r.documentos_removidos} registros removidos)`);
+      loadSecretarias(); loadJobs(); loadDocuments();
     } else if (btn.dataset.depthId) {
       const cur = btn.dataset.depth;
       const v = prompt("Profundidade (0-10; vazio = padrão do sistema)", cur);
@@ -171,6 +211,7 @@ $("sec-form").addEventListener("submit", async (e) => {
         sigla: $("sec-sigla").value,
         url_base: $("sec-url").value,
         max_depth: Number.isNaN(depth) ? null : depth,
+        pdf_filtro: $("sec-filtro").value.trim() === "" ? null : $("sec-filtro").value.trim(),
       }),
     });
     toast("Fonte cadastrada");
@@ -184,11 +225,137 @@ $("sec-form").addEventListener("submit", async (e) => {
       loadJobs();
       loadOverview();
     }
-    $("sec-sigla").value = $("sec-url").value = $("sec-depth").value = "";
+    $("sec-sigla").value = $("sec-url").value = $("sec-depth").value = $("sec-filtro").value = "";
     $("sec-run").checked = false;
     loadSecretarias();
   } catch (err) {
     toast(err.message, true);
+  }
+});
+
+// ---------- Fonte de dados genérica ----------
+
+let colEditandoId = null;
+
+function colConfig() {
+  const modo = $("col-modo").value;
+  return {
+    url: $("col-url").value.trim(),
+    modo,
+    caminho: $("col-caminho").value.trim(),
+    max_paginas: parseInt($("col-max").value, 10) || 1,
+    pagina_inicial: Number.isNaN(parseInt($("col-ini").value, 10)) ? 1 : parseInt($("col-ini").value, 10),
+    renderizar: modo === "tabela_html" && $("col-render").checked,
+    cabecalhos: $("col-cab").value.trim(),
+  };
+}
+
+function colAjustaModo() {
+  const html = $("col-modo").value === "tabela_html";
+  $("col-render-label").hidden = !html;
+  $("col-caminho").placeholder = html
+    ? "tabela (opcional) — seletor CSS, ex.: table.lista · vazio = a maior tabela da página"
+    : "onde estão os dados (opcional) — ex.: dados.itens · vazio = acha sozinho";
+}
+$("col-modo").addEventListener("change", colAjustaModo);
+colAjustaModo();
+
+function colLimpa() {
+  colEditandoId = null;
+  $("col-form").reset();
+  $("col-sigla").disabled = false;
+  $("col-cancelar-edicao").hidden = true;
+  $("col-estado").textContent = "";
+  $("col-preview").innerHTML = "";
+  colAjustaModo();
+}
+$("col-cancelar-edicao").addEventListener("click", colLimpa);
+
+function editarColeta(id) {
+  const s = secretariasCache.find((x) => x.id === id);
+  if (!s || !s.coleta) return;
+  const c = s.coleta;
+  colEditandoId = id;
+  $("col-sigla").value = s.sigla;
+  $("col-sigla").disabled = true;
+  $("col-modo").value = c.modo;
+  $("col-url").value = c.url;
+  $("col-caminho").value = c.caminho || "";
+  $("col-max").value = c.max_paginas;
+  $("col-ini").value = c.pagina_inicial;
+  $("col-render").checked = !!c.renderizar;
+  $("col-cab").value = c.cabecalhos || "";
+  $("col-cancelar-edicao").hidden = false;
+  $("col-estado").textContent = `editando ${s.sigla}`;
+  colAjustaModo();
+  $("col-form").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+$("col-testar").addEventListener("click", async () => {
+  if (!$("col-url").value.trim()) return toast("Informe a URL", true);
+  $("col-testar").disabled = true;
+  $("col-preview").innerHTML = "buscando a primeira página…";
+  try {
+    const r = await api("/coletas/testar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(colConfig()),
+    });
+    if (!r.total_na_pagina) {
+      $("col-preview").innerHTML = "⚠ O site respondeu, mas não encontrei nenhum registro. Ajuste o campo “onde estão os dados”.";
+    } else {
+      $("col-preview").innerHTML =
+        `<div>✅ ${r.total_na_pagina} registro(s) na 1ª página, ${r.colunas.length} coluna(s). Prévia:</div>` +
+        `<div class="prev-wrap"><table><thead><tr>${r.colunas.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>` +
+        r.linhas.map((l) => `<tr>${r.colunas.map((c) => `<td title="${esc(l[c])}">${esc(l[c])}</td>`).join("")}</tr>`).join("") +
+        "</tbody></table></div>";
+    }
+  } catch (err) {
+    $("col-preview").textContent = "";
+    toast(err.message, true);
+  } finally {
+    $("col-testar").disabled = false;
+  }
+});
+
+$("col-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("col-salvar").disabled = true;
+  try {
+    const cfg = colConfig();
+    let sec;
+    if (colEditandoId) {
+      sec = await api(`/coletas/${colEditandoId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cfg),
+      });
+      toast("Fonte atualizada");
+    } else {
+      sec = await api("/coletas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...cfg, sigla: $("col-sigla").value }),
+      });
+      toast("Fonte cadastrada");
+    }
+    if ($("col-run").checked) {
+      const r = await api("/jobs/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secretarias: [sec.sigla], force_full_scrape: false, max_depth: null }),
+      });
+      toast(`Coleta de ${sec.sigla} iniciada`);
+      loadJobs(); loadOverview();
+    }
+    colLimpa();
+    loadSecretarias();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    $("col-salvar").disabled = false;
   }
 });
 
@@ -204,11 +371,35 @@ async function loadJobs() {
             `<td class="nowrap">${j.secretaria}</td><td class="nowrap">${badge(j.status)}</td>` +
             `<td>${j.pdfs_descobertos > 0 ? barra(Math.min(100, Math.round(((j.pdfs_baixados_sucesso + j.pdfs_falhas) * 100) / j.pdfs_descobertos)), j.status === "COMPLETED") : "–"}</td>` +
             `<td>${j.pdfs_descobertos}</td><td>${j.pdfs_baixados_sucesso}</td>` +
-            `<td>${j.pdfs_falhas}</td><td class="mono">${fmtDate(j.started_at)}</td></tr>`
+            `<td>${j.pdfs_falhas}</td><td class="mono">${fmtDate(j.started_at)}</td>` +
+            `<td class="nowrap">${
+              j.status === "RUNNING"
+                ? `<button class="mini" data-cancel="${j.job_id}" title="Interrompe a tarefa (o que já foi baixado fica)">cancelar</button> `
+                : ""
+            }${
+              j.pdfs_baixados_sucesso > 0
+                ? `<a class="mini" href="${API}/jobs/${j.job_id}/download" title="Baixa todos os arquivos desta tarefa em um .zip">⬇ zip</a>`
+                : ""
+            }</td></tr>`
         )
         .join("")
-    : '<tr><td colspan="8" class="empty">nenhuma tarefa ainda</td></tr>';
+    : '<tr><td colspan="9" class="empty">nenhuma tarefa ainda</td></tr>';
 }
+
+$("jobs-tbody").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-cancel]");
+  if (!b) return;
+  if (!confirm("Cancelar esta tarefa? O que já foi baixado é mantido.")) return;
+  b.disabled = true;
+  try {
+    const r = await api(`/jobs/${b.dataset.cancel}/cancel`, { method: "POST" });
+    toast(`Tarefa cancelada (${r.pendentes_removidos} pendente(s) descartado(s))`);
+    loadJobs(); loadOverview(); loadProgressoTarefas();
+  } catch (err) {
+    toast(err.message, true);
+    b.disabled = false;
+  }
+});
 
 $("btn-start").addEventListener("click", async () => {
   const selecionadas = [...document.querySelectorAll("#secretaria-checks input:checked")].map(
@@ -401,7 +592,7 @@ async function loadDocuments() {
             `<td class="mono" title="${i.hash_sha256 || ""}">${i.hash_sha256 ? i.hash_sha256.slice(0, 10) + "…" : "—"}</td>` +
             `<td class="mono">${
               i.minio_path
-                ? `<a href="${API}/documents/${i.id}/file" target="_blank" title="${i.minio_path}">${i.minio_path}</a>`
+                ? `<a href="${API}/documents/${i.id}/file" target="_blank" title="${i.minio_path}">${i.minio_path}</a> <a class="mini" href="${API}/documents/${i.id}/file?download=true" title="Baixar arquivo">⬇</a>`
                 : "—"
             }</td>` +
             `<td class="mono">${fmtDate(i.created_at)}</td></tr>`
@@ -469,7 +660,7 @@ async function loadProgressoTarefas() {
             ? `✗ Interrompida${quando ? " em " + quando : ""} — ${t.texto}${falhas}`
             : `${t.texto}${falhas}`;
         const fechar = t.situacao === "RUNNING"
-          ? ""
+          ? `<button class="mini" data-cancel="${t.job_id}" title="Interrompe a tarefa">cancelar</button>`
           : `<button class="mini" data-dispensar="${t.job_id}" title="Remover da lista">×</button>`;
         const pct = feito && t.percentual == null ? 100 : t.percentual;
         return `<div class="prog-item"><div class="prog-resumo"><span><b>${t.fonte}</b> <span class="hint">${t.descricao}</span></span>` +
@@ -482,7 +673,17 @@ async function loadProgressoTarefas() {
   }
 }
 
-$("prog-tarefas-lista").addEventListener("click", (e) => {
+$("prog-tarefas-lista").addEventListener("click", async (e) => {
+  const c = e.target.closest("button[data-cancel]");
+  if (c) {
+    if (!confirm("Cancelar esta tarefa? O que já foi baixado é mantido.")) return;
+    try {
+      const r = await api(`/jobs/${c.dataset.cancel}/cancel`, { method: "POST" });
+      toast(`Tarefa cancelada (${r.pendentes_removidos} pendente(s) descartado(s))`);
+      loadJobs(); loadOverview(); loadProgressoTarefas();
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
   const b = e.target.closest("button[data-dispensar]");
   if (!b) return;
   dispensarTarefa(b.dataset.dispensar);

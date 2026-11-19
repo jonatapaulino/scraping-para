@@ -15,7 +15,7 @@
   try { _tema = localStorage.getItem("tema") || "auto"; } catch (e) {}
   aplicarTema(_tema);
 </script>
-<link rel="stylesheet" href="style.css?v=8">
+<link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 <header>
@@ -105,25 +105,59 @@
     <div id="folha-result" class="result"></div>
   </section>
 
+  <section class="panel">
+    <h2>⚙ Fonte de dados — qualquer site</h2>
+    <p class="hint">Para sites que <b>não</b> são só lista de PDFs: uma API (JSON) ou uma página com tabela. Preencha, clique em <b>Testar</b> para ver as colunas antes de salvar, e a coleta vira um CSV.</p>
+    <form id="col-form" class="col-form">
+      <div class="col-linha">
+        <input id="col-sigla" placeholder="SIGLA" maxlength="20" required>
+        <select id="col-modo" title="Como ler a resposta do site">
+          <option value="json">API / JSON</option>
+          <option value="tabela_html">Página com tabela (HTML)</option>
+        </select>
+        <input id="col-url" class="grow" placeholder="https://site.pa.gov.br/api/dados?pagina={page}" maxlength="2000" required title="Use {page} na URL se o site tem várias páginas (ela é trocada por 1, 2, 3…)">
+      </div>
+      <div class="col-linha">
+        <input id="col-caminho" class="grow" placeholder="onde estão os dados (opcional) — JSON: dados.itens · tabela: table.lista" maxlength="255" title="JSON: caminho até a lista (vazio = acha sozinho). Tabela: seletor CSS (vazio = a maior tabela da página).">
+        <label title="Quantas páginas buscar no máximo (só vale se a URL tem {page})">páginas: <input id="col-max" type="number" min="1" max="5000" value="1" style="width:70px"></label>
+        <label title="Primeiro número que entra no {page}">começa em: <input id="col-ini" type="number" min="0" value="1" style="width:70px"></label>
+        <label id="col-render-label" hidden title="Carrega a página num Chrome de verdade (para tabelas montadas por JavaScript)"><input type="checkbox" id="col-render"> página com JavaScript</label>
+      </div>
+      <details>
+        <summary>avançado — cabeçalhos (ex.: token de acesso)</summary>
+        <textarea id="col-cab" rows="2" placeholder="Authorization: Bearer xxxxx" maxlength="2000"></textarea>
+      </details>
+      <div class="start-actions">
+        <button type="button" id="col-testar">🔍 Testar</button>
+        <button class="primary" id="col-salvar">+ Salvar fonte</button>
+        <label class="nowrap"><input type="checkbox" id="col-run"> coletar agora</label>
+        <button type="button" id="col-cancelar-edicao" hidden>cancelar edição</button>
+        <span class="hint" id="col-estado"></span>
+      </div>
+    </form>
+    <div id="col-preview" class="result"></div>
+  </section>
+
   <div class="grid-2">
     <section class="panel">
       <h2>Tarefas recentes</h2>
       <table>
-        <thead><tr><th>Tarefa</th><th>Fonte</th><th>Situação</th><th>Progresso</th><th>Itens</th><th>OK</th><th>Falhas</th><th>Início</th></tr></thead>
-        <tbody id="jobs-tbody"><tr><td colspan="8" class="empty">carregando…</td></tr></tbody>
+        <thead><tr><th>Tarefa</th><th>Fonte</th><th>Situação</th><th>Progresso</th><th>Itens</th><th>OK</th><th>Falhas</th><th>Início</th><th>Ações</th></tr></thead>
+        <tbody id="jobs-tbody"><tr><td colspan="9" class="empty">carregando…</td></tr></tbody>
       </table>
     </section>
 
     <section class="panel">
       <h2>Secretarias</h2>
       <table>
-        <thead><tr><th>Sigla</th><th>URL base</th><th>Depth</th><th>Ativa</th><th>Ações</th><th>Tipo</th></tr></thead>
-        <tbody id="secs-tbody"><tr><td colspan="6" class="empty">carregando…</td></tr></tbody>
+        <thead><tr><th>Sigla</th><th>URL base</th><th>Depth</th><th title="Quais PDFs baixar nesta fonte">PDFs</th><th>Ativa</th><th>Ações</th><th>Tipo</th></tr></thead>
+        <tbody id="secs-tbody"><tr><td colspan="7" class="empty">carregando…</td></tr></tbody>
       </table>
       <form id="sec-form" class="inline-form">
         <input id="sec-sigla" placeholder="SIGLA" maxlength="20" required>
         <input id="sec-url" placeholder="https://portal.pa.gov.br/..." maxlength="255" required>
         <input id="sec-depth" type="number" min="0" max="10" placeholder="depth (padrão)" title="Profundidade do crawl: cliques da página cadastrada até o link do PDF. Vazio = padrão." style="width:9rem">
+        <input id="sec-filtro" placeholder="PDFs: vazio = só financeiros · * = todos · ou regex" maxlength="255" title="Quais PDFs baixar. Vazio = padrão do sistema (editais, contratos, convênios…). * = todos os PDFs do site. Ou uma regex, ex.: remunera|inativ" style="width:19rem">
         <label class="nowrap" title="Dispara a raspagem logo após cadastrar"><input id="sec-run" type="checkbox"> raspar agora</label>
         <button class="primary">+ Adicionar</button>
       </form>
@@ -154,6 +188,6 @@
 </main>
 
 <div id="toast"></div>
-<script src="app.js?v=12"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>

@@ -107,7 +107,8 @@ button {
 button:hover { filter: brightness(1.2); }
 button.primary { background: var(--accent); color: #fff; }
 button:disabled { opacity: 0.5; cursor: default; }
-button.mini { padding: 2px 8px; font-size: 11px; border-radius: 4px; }
+button.mini, a.mini { padding: 2px 8px; font-size: 11px; border-radius: 4px; }
+a.mini { display: inline-block; border: 1px solid var(--border, #30363d); color: inherit; text-decoration: none; }
 .card .mini { align-self: flex-start; margin-top: 4px; }
 .card-value.small { font-size: 18px; }
 td a { color: var(--accent); text-decoration: none; }
@@ -144,6 +145,7 @@ td.nowrap { white-space: nowrap; }
 .badge.RUNNING, .badge.PENDING { background: #d2992233; color: var(--yellow); }
 .badge.COMPLETED, .badge.SUCCESS { background: #3fb95033; color: var(--green); }
 .badge.FAILED { background: #f8514933; color: var(--red); }
+.badge.CANCELLED { background: #8b949e33; color: var(--muted, #8b949e); }
 
 .inline-form { display: flex; gap: 8px; margin-top: 12px; }
 input, select {
@@ -224,3 +226,13 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .prog-item .barra-linha { margin: 6px 0 4px; }
 .prog-item .bar { margin: 0; }
 .checks label.indisp { opacity: 0.45; cursor: not-allowed; }
+
+/* fonte de dados generica */
+.col-form { display: flex; flex-direction: column; gap: 8px; }
+.col-linha { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.col-linha .grow { flex: 1 1 18rem; min-width: 12rem; }
+.col-form textarea { width: 100%; box-sizing: border-box; font-family: inherit; }
+.prev-wrap { overflow: auto; max-height: 20rem; margin-top: 8px; }
+.prev-wrap table { font-size: 12px; }
+.prev-wrap th, .prev-wrap td { white-space: nowrap; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; }
+.badge.COLETA { background: #a371f733; color: #a371f7; }

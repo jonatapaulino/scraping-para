@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, OperationalError as SAOperationalError
 from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
-from app import broker, config, drive, http_client, storage, transparencia
+from app import broker, coleta, config, drive, http_client, storage, transparencia
 from app.celery_app import celery
 from app.database import SessionLocal
 from app.models import (
@@ -63,6 +63,7 @@ DEAD_REQUEUEABLE = (
     "app.tasks.download_document",
     "app.tasks.discover_dataset",
     "app.tasks.fetch_dataset_mes",
+    "app.tasks.coletar_fonte",
 )
 
 
@@ -104,6 +105,16 @@ def finish_task_unit(session, job_id: uuid.UUID | None) -> None:
             .values(status=JobStatus.COMPLETED, completed_at=datetime.now(timezone.utc))
         )
     session.commit()
+
+
+def _job_cancelado(job_id: uuid.UUID) -> bool:
+    """True se o usuario cancelou o job pelo painel — as tasks restantes da fila
+    viram no-op (nao baixam, nao enfileiram mais nada)."""
+    with SessionLocal() as s:
+        st = s.execute(
+            select(ScrapingJob.status).where(ScrapingJob.id == job_id)
+        ).scalar_one_or_none()
+    return st == JobStatus.CANCELLED
 
 
 def _effective_depth(secretaria, max_depth: int | None) -> int:
@@ -262,7 +273,9 @@ def _claim_page(session, url: str, job_id: uuid.UUID) -> bool:
     return claimed is not None
 
 
-def extract_links(page_url: str, html: str) -> tuple[list[str], list[str]]:
+def extract_links(
+    page_url: str, html: str, pdf_filtro: str | None = None
+) -> tuple[list[str], list[str]]:
     soup = BeautifulSoup(html, "html.parser")
     docs, pages = [], []
     base_netloc = urlparse(normalize_url(page_url)).netloc
@@ -276,7 +289,7 @@ def extract_links(page_url: str, html: str) -> tuple[list[str], list[str]]:
         abs_url = normalize_url(abs_url)
         # .pdf no path OU na query (ex: arquivo.php?arq=/doc.pdf) — magic bytes valida falso-positivo
         if ".pdf" in abs_url.lower():
-            if _pdf_allow(abs_url):
+            if _pdf_allow(abs_url, pdf_filtro):
                 docs.append(abs_url)
             # fora da whitelist: descarta — PDF nao e pagina navegavel e
             # enfileirar como discover so queimaria uma task a toa
@@ -285,10 +298,10 @@ def extract_links(page_url: str, html: str) -> tuple[list[str], list[str]]:
     return docs, pages
 
 
-def _pdf_allow(url: str) -> bool:
-    """Whitelist do crawl: so PDF cujo nome/URL parece material financeiro
-    (CRAWL_PDF_ALLOW; vazio = baixa tudo)."""
-    allow = config.CRAWL_PDF_ALLOW
+def _pdf_allow(url: str, filtro: str | None = None) -> bool:
+    """Whitelist do crawl. `filtro` e o da fonte (None = padrao global
+    CRAWL_PDF_ALLOW, so material financeiro; "" = baixa tudo)."""
+    allow = config.CRAWL_PDF_ALLOW if filtro is None else filtro
     if not allow:
         return True
     return re.search(allow, unquote(url), re.IGNORECASE) is not None
@@ -415,6 +428,9 @@ def discover_page(self, payload: dict):
     depth = int(payload.get("depth", 0))
     max_depth = int(payload.get("max_depth", config.DISCOVERY_MAX_DEPTH))
     force = bool(payload.get("force", False))
+    if _job_cancelado(job_id):
+        log.info("Job %s cancelado — descartando %s", job_id, url)
+        return
     log.info("Discovery %s (depth=%d/%d)", url, depth, max_depth)
 
     try:
@@ -427,7 +443,11 @@ def discover_page(self, payload: dict):
                 finish_task_unit(s, job_id)
             return
         raise
-    docs, pages = extract_links(url, html)
+    with SessionLocal() as s:
+        pdf_filtro = s.execute(
+            select(Secretaria.pdf_filtro).where(Secretaria.id == secretaria_id)
+        ).scalar_one_or_none()
+    docs, pages = extract_links(url, html, pdf_filtro)
 
     doc_payloads, page_payloads = [], []
     with SessionLocal() as s:
@@ -511,6 +531,10 @@ def download_document(self, payload: dict):
     url = payload["url"]
     job_id = uuid.UUID(payload["job_id"])
     documento_id = uuid.UUID(payload["documento_id"])
+
+    if _job_cancelado(job_id):
+        log.info("Job %s cancelado — descartando download %s", job_id, url)
+        return
 
     with SessionLocal() as s:
         doc = s.get(Documento, documento_id)
@@ -686,6 +710,16 @@ def dispatch_scheduled():
             except Exception:
                 log.exception("Beat: falha ao disparar job para %s", sec.sigla)
         log.info("Beat: %d/%d jobs disparados", ok, len(ativas))
+        coletas = s.execute(
+            select(Secretaria).where(
+                Secretaria.is_ativa.is_(True), Secretaria.tipo == "coleta"
+            )
+        ).scalars().all()
+        for sec in coletas:
+            try:
+                start_coleta_job(s, sec)
+            except Exception:
+                log.exception("Beat: falha ao disparar coleta de %s", sec.sigla)
     return ok
 
 
@@ -861,6 +895,10 @@ def discover_dataset(self, payload: dict):
     ini = (int(payload["ano_ini"]), int(payload["mes_ini"]))
     fim = (int(payload["ano_fim"]), int(payload["mes_fim"]))
 
+    if _job_cancelado(job_id):
+        log.info("Job %s cancelado — descoberta de %s descartada", job_id, dataset)
+        return
+
     recortes = transparencia.build_recortes(spec, ini, fim)
 
     # Unidade = (recorte, orgao). Selecao explicita => 1 doc por orgao.
@@ -983,17 +1021,29 @@ def fetch_dataset_mes(self, payload: dict):
     siglas = orgao.split("+") if orgao else None
     rotulo = transparencia.recorte_label(recorte)
 
+    if _job_cancelado(job_id):
+        log.info("Job %s cancelado — coleta %s %s descartada", job_id, dataset, rotulo)
+        return
+
     # Documentos PDF por orgao (datasets que publicam anexos — ex.:
     # termo/plano de trabalho dos convenios). Independe do dedup do CSV —
     # roda antes, pois cada doc vai pra <SIGLA>/<dataset>/documentos/.
     if spec.iter_docs:
         n_ok, seen = 0, {}
         for d in spec.iter_docs(recorte, siglas):
-            try:
-                if _baixa_doc_pdf(dataset, d, seen):
-                    n_ok += 1
-            except Exception:
-                log.exception("Doc %s falhou", d.get("url"))
+            # ate 3 tentativas: o servidor as vezes fecha a conexao no meio
+            # do PDF; sem retry o doc ficava faltando e o progresso em 99,9%.
+            for tentativa in range(1, 4):
+                try:
+                    if _baixa_doc_pdf(dataset, d, seen):
+                        n_ok += 1
+                    break
+                except Exception:
+                    if tentativa == 3:
+                        log.exception("Doc %s falhou apos 3 tentativas", d.get("url"))
+                    else:
+                        log.warning("Doc %s falhou (tentativa %d/3); repetindo", d.get("url"), tentativa)
+                        time.sleep(config.DOWNLOAD_DELAY_SECONDS * tentativa * 2)
             time.sleep(config.DOWNLOAD_DELAY_SECONDS)
         log.info("%s %s: %d documentos baixados", dataset, rotulo, n_ok)
 
@@ -1110,6 +1160,167 @@ def fetch_dataset_mes(self, payload: dict):
         )
 
     time.sleep(config.DOWNLOAD_DELAY_SECONDS)
+
+
+# ---------- fontes genericas (coleta configurada pelo painel) ----------
+
+
+def start_coleta_job(session, secretaria) -> ScrapingJob:
+    """Cria o job de uma fonte 'coleta' e enfileira a coleta."""
+    job = ScrapingJob(secretaria_id=secretaria.id, status=JobStatus.RUNNING, tipo="coleta")
+    session.add(job)
+    session.flush()
+    session.add(JobPending(job_id=job.id, pending=1))
+    session.commit()
+    try:
+        coletar_fonte.apply_async(
+            args=[{"job_id": str(job.id), "secretaria_id": str(secretaria.id)}]
+        )
+    except Exception:
+        log.exception("Falha ao enfileirar coletar_fonte do job %s", job.id)
+        session.execute(
+            update(ScrapingJob)
+            .where(ScrapingJob.id == job.id)
+            .values(status=JobStatus.FAILED, completed_at=datetime.now(timezone.utc))
+        )
+        session.commit()
+        raise
+    return job
+
+
+@celery.task(
+    base=DeadLetterTask,
+    bind=True,
+    autoretry_for=TRANSIENT_ERRORS,
+    retry_backoff=config.RETRY_BASE_SECONDS,
+    retry_backoff_max=3600,
+    retry_jitter=True,
+    max_retries=config.MAX_RETRIES,
+)
+def coletar_fonte(self, payload: dict):
+    """Executa a coleta de uma fonte generica: busca JSON/tabela (com paginacao),
+    junta tudo num CSV unico e grava em MinIO + downloads/<sigla>/<ano>/."""
+    job_id = uuid.UUID(payload["job_id"])
+    secretaria_id = uuid.UUID(payload["secretaria_id"])
+    if _job_cancelado(job_id):
+        log.info("Job %s cancelado — coleta descartada", job_id)
+        return
+
+    with SessionLocal() as s:
+        sec = s.get(Secretaria, secretaria_id)
+        if sec is None or not sec.coleta:
+            log.error("Fonte %s sem configuracao de coleta", secretaria_id)
+            finish_task_unit(s, job_id)
+            return
+        sigla, cfg = sec.sigla, coleta.ColetaConfig(**sec.coleta)
+        s.execute(
+            update(ScrapingJob).where(ScrapingJob.id == job_id).values(total_pdfs_encontrados=1)
+        )
+        s.commit()
+
+    agora = datetime.now(timezone.utc)
+    url_origem = f"coleta://{sigla}/{job_id}"
+
+    def _falha(motivo: str):
+        log.warning("Coleta %s falhou: %s", sigla, motivo)
+        with SessionLocal() as s:
+            s.execute(
+                pg_insert(Documento)
+                .values(
+                    secretaria_id=secretaria_id, job_id=job_id, url_origem=url_origem,
+                    status_download=DownloadStatus.FAILED,
+                )
+                .on_conflict_do_nothing(index_elements=["url_origem"])
+            )
+            finish_task_unit(s, job_id)
+
+    with tempfile.TemporaryFile("w+", encoding="utf-8") as brutas:
+        colunas: list[str] = []
+        conhecidas: set[str] = set()
+        total = 0
+        try:
+            for linha in coleta.buscar_linhas(cfg, pausa=config.DISCOVERY_DELAY_SECONDS):
+                brutas.write(json.dumps(linha, ensure_ascii=False, default=str) + "\n")
+                total += 1
+                for k in linha:
+                    if k not in conhecidas:
+                        conhecidas.add(k)
+                        colunas.append(k)
+                if total % 2000 == 0 and _job_cancelado(job_id):
+                    log.info("Job %s cancelado durante a coleta", job_id)
+                    return
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code
+            if 400 <= code < 500 and code not in (408, 429):
+                return _falha(f"HTTP {code} em {exc.request.url}")
+            raise
+        except ValueError as exc:  # caminho/tabela inexistente (JSONDecodeError sobe p/ retry)
+            if isinstance(exc, json.JSONDecodeError):
+                raise
+            return _falha(str(exc))
+        if total == 0:
+            return _falha("nenhum registro encontrado")
+
+        brutas.seek(0)
+        with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES) as tmp:
+            texto = io.TextIOWrapper(tmp, encoding="utf-8-sig", newline="", write_through=True)
+            w = csv.DictWriter(texto, fieldnames=colunas, restval="")
+            w.writeheader()
+            for ln in brutas:
+                w.writerow(json.loads(ln))
+            texto.flush()
+            tmp.seek(0)
+            sha = hashlib.sha256()
+            for chunk in iter(lambda: tmp.read(256 * 1024), b""):
+                sha.update(chunk)
+            digest, size = sha.hexdigest(), tmp.tell()
+            tmp.seek(0)
+
+            with SessionLocal() as s:
+                dupe = s.execute(
+                    select(Documento).where(Documento.hash_sha256 == digest)
+                ).scalar_one_or_none()
+                if dupe:
+                    s.execute(
+                        pg_insert(Documento)
+                        .values(
+                            secretaria_id=secretaria_id, job_id=job_id, url_origem=url_origem,
+                            minio_path=dupe.minio_path, tamanho_bytes=size,
+                            status_download=DownloadStatus.SUCCESS, downloaded_at=agora,
+                        )
+                        .on_conflict_do_nothing(index_elements=["url_origem"])
+                    )
+                    finish_task_unit(s, job_id)
+                    log.info("Coleta %s identica a %s — nada novo", sigla, dupe.minio_path)
+                    return
+
+            nome = f"{sigla.lower()}-{agora:%Y-%m-%d_%H%M%S}.csv"
+            path = f"{config.MINIO_BUCKET}/{sigla.lower()}/{agora:%Y}/{nome}"
+            minio = storage.ensure_bucket()
+            minio.put_object(
+                config.MINIO_BUCKET, path.split("/", 1)[1], tmp,
+                length=size, content_type="text/csv",
+            )
+            if config.LOCAL_EXPORT_DIR:
+                try:
+                    _export_local(tmp, path)
+                except OSError:
+                    log.exception("Falha ao exportar %s para o host", path)
+            drive.upload_file(tmp, path.split("/", 1)[1], "text/csv")
+
+            with SessionLocal() as s:
+                s.execute(
+                    pg_insert(Documento)
+                    .values(
+                        secretaria_id=secretaria_id, job_id=job_id, url_origem=url_origem,
+                        hash_sha256=digest, minio_path=path, tamanho_bytes=size,
+                        magic_byte_valido=True, status_download=DownloadStatus.SUCCESS,
+                        downloaded_at=agora,
+                    )
+                    .on_conflict_do_nothing(index_elements=["url_origem"])
+                )
+                finish_task_unit(s, job_id)
+            log.info("Coleta %s ok: %d registros, %d colunas -> s3://%s", sigla, total, len(colunas), path)
 
 
 def requeue_dead_letters(limit: int = 100) -> int:

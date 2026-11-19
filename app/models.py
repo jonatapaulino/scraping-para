@@ -14,6 +14,7 @@ class JobStatus(str, enum.Enum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class DownloadStatus(str, enum.Enum):
@@ -33,6 +34,16 @@ class Secretaria(Base):
     # 'crawl' = portal navegavel; 'api' = fonte de dados estruturada
     # (ex.: Portal da Transparencia) — fora das rodadas de crawl do Beat
     tipo: Mapped[str] = mapped_column(String(32), default="crawl")
+    # Filtro (regex) dos PDFs a baixar nesta fonte. NULL = padrao global
+    # (CRAWL_PDF_ALLOW, so material financeiro); "" = baixa todos os PDFs.
+    pdf_filtro: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # tipo 'coleta': configuracao (JSON) da fonte generica cadastrada pelo painel
+    coleta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    @property
+    def coleta(self) -> dict | None:
+        import json
+        return json.loads(self.coleta_json) if self.coleta_json else None
 
     jobs: Mapped[list["ScrapingJob"]] = relationship(back_populates="secretaria")
     documentos: Mapped[list["Documento"]] = relationship(back_populates="secretaria")

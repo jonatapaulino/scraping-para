@@ -1,21 +1,25 @@
 import logging
+import os
+import tempfile
 import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import paginate
 from minio.error import S3Error
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import config, storage, transparencia
+from app import coleta, config, storage, transparencia
 from app.database import SessionLocal
 from app.models import (
-    CrawledPage, Documento, DownloadStatus, JobStatus, ScrapingJob, Secretaria,
+    CrawledPage, Documento, DownloadStatus, JobPending, JobStatus, ScrapingJob, Secretaria,
 )
 from app.schemas import (
     DocumentoOut,
@@ -26,11 +30,14 @@ from app.schemas import (
     JobStartResponse,
     JobStatusOut,
     OverviewOut,
+    ColetaIn,
     SecretariaIn,
     SecretariaOut,
     SecretariaUpdate,
 )
-from app.tasks import requeue_dead_letters, start_dataset_job, start_job_for_secretaria
+from app.tasks import (
+    requeue_dead_letters, start_coleta_job, start_dataset_job, start_job_for_secretaria,
+)
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +66,7 @@ def start_jobs(req: JobStartRequest, s: Session = Depends(get_session)):
             raise HTTPException(404, f"Secretaria '{sigla}' nao cadastrada")
         if not sec.is_ativa:
             raise HTTPException(400, f"Secretaria '{sigla}' esta inativa")
-        if sec.sigla not in _FONTES_DATASET and sec.tipo != "crawl":
+        if sec.sigla not in _FONTES_DATASET and sec.tipo not in ("crawl", "coleta"):
             raise HTTPException(
                 400,
                 f"'{sigla}' e fonte de API, nao portal — use POST /api/v1/folha/start",
@@ -72,7 +79,9 @@ def start_jobs(req: JobStartRequest, s: Session = Depends(get_session)):
         raise HTTPException(400, "Ano inicial maior que o final")
     job_ids = []
     for sec in secs:
-        if sec.sigla in _FONTES_DATASET:
+        if sec.tipo == "coleta":
+            job = start_coleta_job(s, sec)
+        elif sec.sigla in _FONTES_DATASET:
             job = start_dataset_job(
                 s, _FONTES_DATASET[sec.sigla], ano_ini, 1, ano_fim, 12, None,
                 req.force_full_scrape,
@@ -101,6 +110,75 @@ def job_status(job_id: uuid.UUID, s: Session = Depends(get_session)):
         pdfs_descobertos=job.total_pdfs_encontrados,
         pdfs_baixados_sucesso=counts.get(DownloadStatus.SUCCESS, 0),
         pdfs_falhas=counts.get(DownloadStatus.FAILED, 0),
+    )
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: uuid.UUID, s: Session = Depends(get_session)):
+    """Cancela um job em andamento. O que ja foi baixado fica; as tarefas que
+    ainda estao na fila viram no-op. Documentos PENDING sao removidos para que
+    uma nova execucao os redescubra (a dedup e por URL)."""
+    job = s.get(ScrapingJob, job_id)
+    if job is None:
+        raise HTTPException(404, "Job nao encontrado")
+    if job.status != JobStatus.RUNNING:
+        raise HTTPException(409, f"Job nao esta em andamento ({job.status.value})")
+    job.status = JobStatus.CANCELLED
+    job.completed_at = datetime.now(timezone.utc)
+    removidos = s.execute(
+        delete(Documento).where(
+            Documento.job_id == job_id, Documento.status_download == DownloadStatus.PENDING
+        )
+    ).rowcount
+    s.commit()
+    return {"job_id": job_id, "status": job.status, "pendentes_removidos": removidos}
+
+
+@router.get("/jobs/{job_id}/download")
+def download_job(job_id: uuid.UUID, s: Session = Depends(get_session)):
+    """Zip com todos os arquivos (PDF/CSV) ja baixados do job."""
+    job = s.get(ScrapingJob, job_id)
+    if job is None:
+        raise HTTPException(404, "Job nao encontrado")
+    paths = s.execute(
+        select(Documento.minio_path)
+        .where(
+            Documento.job_id == job_id,
+            Documento.status_download == DownloadStatus.SUCCESS,
+            Documento.minio_path.is_not(None),
+        )
+        .distinct()
+    ).scalars().all()
+    if not paths:
+        raise HTTPException(404, "Esta tarefa ainda nao tem arquivos baixados")
+    minio = storage.client()
+    fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(tmp_path, "w", allowZip64=True) as zf:
+            for mp in paths:
+                key = mp.split("/", 1)[1]
+                tipo = zipfile.ZIP_DEFLATED if key.lower().endswith(".csv") else zipfile.ZIP_STORED
+                try:
+                    obj = minio.get_object(config.MINIO_BUCKET, key)
+                except S3Error:
+                    log.warning("Objeto ausente ao montar zip: %s", key)
+                    continue
+                try:
+                    with zf.open(zipfile.ZipInfo(key), "w", force_zip64=True) as dst:
+                        for chunk in obj.stream(256 * 1024):
+                            dst.write(chunk)
+                finally:
+                    obj.close()
+                    obj.release_conn()
+    except Exception:
+        os.remove(tmp_path)
+        raise
+    return FileResponse(
+        tmp_path,
+        media_type="application/zip",
+        filename=f"tarefa-{str(job_id)[:8]}.zip",
+        background=BackgroundTask(os.remove, tmp_path),
     )
 
 
@@ -205,6 +283,7 @@ def create_secretaria(req: SecretariaIn, s: Session = Depends(get_session)):
         url_base=req.url_base,
         is_ativa=req.is_ativa,
         max_depth=req.max_depth,
+        pdf_filtro=req.pdf_filtro,
     )
     s.add(sec)
     try:
@@ -228,6 +307,83 @@ def update_secretaria(sec_id: uuid.UUID, req: SecretariaUpdate, s: Session = Dep
     return sec
 
 
+@router.post("/coletas/testar")
+def testar_coleta(cfg: coleta.ColetaConfig):
+    """Pre-visualiza a coleta (1a pagina, sem gravar nada): colunas + primeiras linhas."""
+    try:
+        return coleta.testar(cfg)
+    except Exception as exc:
+        log.info("Teste de coleta falhou: %s", exc)
+        raise HTTPException(400, _erro_legivel(exc))
+
+
+def _erro_legivel(exc: Exception) -> str:
+    import httpx
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"O site respondeu HTTP {exc.response.status_code} para {exc.request.url}"
+    if isinstance(exc, httpx.HTTPError):
+        return f"Nao consegui acessar o site: {exc}"
+    if isinstance(exc, ValueError) and "Expecting value" in str(exc):
+        return "A resposta nao e JSON — se e uma pagina web, use o modo 'tabela HTML'"
+    return str(exc)
+
+
+@router.post("/coletas", response_model=SecretariaOut, status_code=status.HTTP_201_CREATED)
+def create_coleta(req: ColetaIn, s: Session = Depends(get_session)):
+    cfg = coleta.ColetaConfig(**req.model_dump(exclude={"sigla", "is_ativa"}))
+    sec = Secretaria(
+        sigla=req.sigla.strip().upper(), url_base=cfg.url[:255], is_ativa=req.is_ativa,
+        tipo="coleta", coleta_json=cfg.model_dump_json(),
+    )
+    s.add(sec)
+    try:
+        s.commit()
+    except IntegrityError:
+        s.rollback()
+        raise HTTPException(409, f"Fonte '{req.sigla}' ja existe")
+    s.refresh(sec)
+    return sec
+
+
+@router.put("/coletas/{sec_id}", response_model=SecretariaOut)
+def update_coleta(sec_id: uuid.UUID, cfg: coleta.ColetaConfig, s: Session = Depends(get_session)):
+    sec = s.get(Secretaria, sec_id)
+    if sec is None or sec.tipo != "coleta":
+        raise HTTPException(404, "Fonte de coleta nao encontrada")
+    sec.url_base = cfg.url[:255]
+    sec.coleta_json = cfg.model_dump_json()
+    s.commit()
+    s.refresh(sec)
+    return sec
+
+
+@router.delete("/secretarias/{sec_id}")
+def delete_secretaria(sec_id: uuid.UUID, s: Session = Depends(get_session)):
+    """Exclui a fonte e o historico dela no banco (jobs, documentos, paginas
+    visitadas). Os arquivos ja baixados (MinIO e downloads/) NAO sao apagados."""
+    sec = s.get(Secretaria, sec_id)
+    if sec is None:
+        raise HTTPException(404, "Secretaria nao encontrada")
+    if sec.tipo not in ("crawl", "coleta") or sec.sigla in _FONTES_DATASET:
+        raise HTTPException(400, f"'{sec.sigla}' e uma fonte do sistema — nao pode ser excluida")
+    rodando = s.execute(
+        select(func.count(ScrapingJob.id)).where(
+            ScrapingJob.secretaria_id == sec_id, ScrapingJob.status == JobStatus.RUNNING
+        )
+    ).scalar_one()
+    if rodando:
+        raise HTTPException(409, "Ha tarefa em andamento — cancele antes de excluir")
+    job_ids = select(ScrapingJob.id).where(ScrapingJob.secretaria_id == sec_id)
+    n_docs = s.execute(delete(Documento).where(Documento.secretaria_id == sec_id)).rowcount
+    s.execute(delete(JobPending).where(JobPending.job_id.in_(job_ids)))
+    s.execute(delete(CrawledPage).where(CrawledPage.job_id.in_(job_ids)))
+    s.execute(delete(ScrapingJob).where(ScrapingJob.secretaria_id == sec_id))
+    s.delete(sec)
+    s.commit()
+    return {"excluida": sec.sigla, "documentos_removidos": n_docs}
+
+
 @router.post("/dead-letters/requeue")
 def requeue_dead(limit: int = 100):
     """Republica mensagens da q.dead na fila original (novo ciclo de retries)."""
@@ -236,7 +392,7 @@ def requeue_dead(limit: int = 100):
 
 
 @router.get("/documents/{doc_id}/file")
-def document_file(doc_id: uuid.UUID, s: Session = Depends(get_session)):
+def document_file(doc_id: uuid.UUID, download: bool = False, s: Session = Depends(get_session)):
     """Faz proxy do arquivo guardado no MinIO (evita presigned URL com host interno)."""
     doc = s.get(Documento, doc_id)
     if doc is None or not doc.minio_path:
@@ -263,7 +419,9 @@ def document_file(doc_id: uuid.UUID, s: Session = Depends(get_session)):
     return StreamingResponse(
         _iter(),
         media_type=media_type,
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'{"attachment" if download else "inline"}; filename="{filename}"'
+        },
     )
 
 
@@ -431,7 +589,7 @@ def progresso_tarefas(s: Session = Depends(get_session)):
         .join(Secretaria, Secretaria.id == ScrapingJob.secretaria_id)
         .where(
             (ScrapingJob.status == JobStatus.RUNNING)
-            | (ScrapingJob.completed_at >= limite)
+            | ((ScrapingJob.completed_at >= limite) & (ScrapingJob.status != JobStatus.CANCELLED))
         )
         .order_by(ScrapingJob.started_at.desc())
         .limit(30)
@@ -469,6 +627,14 @@ def progresso_tarefas(s: Session = Depends(get_session)):
             t["texto"] = (
                 f"{feitos} de {total} PDFs encontrados" + (" até agora — ainda descobrindo" if rodando else "")
                 if total else ("procurando PDFs…" if rodando else "nenhum PDF novo")
+            )
+        elif job.tipo == "coleta":
+            t["fonte"] = sigla
+            t["descricao"] = "coleta de dados (CSV)"
+            t["percentual"] = 100 if feitos else None
+            t["texto"] = (
+                "coletando…" if rodando
+                else ("arquivo gerado (ou idêntico ao anterior)" if ok else "falhou ou sem registros")
             )
         else:
             urls = s.execute(
