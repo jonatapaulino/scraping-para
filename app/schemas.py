@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -5,6 +6,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.coleta import ColetaConfig
 from app.models import DownloadStatus, JobStatus
 
 
@@ -99,11 +101,31 @@ class DocumentoOut(BaseModel):
     downloaded_at: Optional[datetime]
 
 
+def _check_filtro(v: Optional[str]) -> Optional[str]:
+    """None = padrao global; '*' ou '' = todos os PDFs (guardado como ''); senao regex valida."""
+    if v is None:
+        return None
+    v = v.strip()
+    if v in ("", "*"):
+        return ""
+    try:
+        re.compile(v)
+    except re.error as exc:
+        raise ValueError(f"Filtro invalido (regex): {exc}")
+    return v
+
+
 class SecretariaIn(BaseModel):
     sigla: str = Field(max_length=20)
     url_base: str = Field(max_length=255)
     is_ativa: bool = True
     max_depth: Optional[int] = Field(default=None, ge=0, le=10)
+    pdf_filtro: Optional[str] = Field(default=None, max_length=255)
+
+    @field_validator("pdf_filtro")
+    @classmethod
+    def _filtro_ok(cls, v: Optional[str]) -> Optional[str]:
+        return _check_filtro(v)
 
     @field_validator("url_base")
     @classmethod
@@ -111,10 +133,22 @@ class SecretariaIn(BaseModel):
         return _check_url(v)
 
 
+class ColetaIn(ColetaConfig):
+    """Cadastro de fonte generica: sigla + configuracao da coleta."""
+    sigla: str = Field(min_length=1, max_length=20)
+    is_ativa: bool = True
+
+
 class SecretariaUpdate(BaseModel):
     url_base: Optional[str] = Field(default=None, max_length=255)
     is_ativa: Optional[bool] = None
     max_depth: Optional[int] = Field(default=None, ge=0, le=10)
+    pdf_filtro: Optional[str] = Field(default=None, max_length=255)
+
+    @field_validator("pdf_filtro")
+    @classmethod
+    def _filtro_ok(cls, v: Optional[str]) -> Optional[str]:
+        return _check_filtro(v)
 
     @field_validator("url_base")
     @classmethod
@@ -131,3 +165,5 @@ class SecretariaOut(BaseModel):
     is_ativa: bool
     max_depth: Optional[int]
     tipo: str
+    pdf_filtro: Optional[str] = None
+    coleta: Optional[dict] = None

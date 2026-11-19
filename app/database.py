@@ -18,6 +18,8 @@ _ADDITIVE_COLUMNS = {
     "secretaria": [
         ("max_depth", "INTEGER"),
         ("tipo", "VARCHAR(10) DEFAULT 'crawl'"),
+        ("pdf_filtro", "VARCHAR(255)"),
+        ("coleta_json", "TEXT"),
     ],
     "scraping_job": [("tipo", "VARCHAR(10) DEFAULT 'crawl'")],
     "documento": [("downloaded_at", "TIMESTAMP WITH TIME ZONE")],
@@ -52,6 +54,13 @@ def _migrate() -> None:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
                     log.info("Coluna %s.%s adicionada", table, name)
     models.Base.metadata.create_all(engine)
+    # Valor novo no enum nativo do Postgres (create_all nao altera tipos existentes).
+    # ADD VALUE nao roda dentro de transacao em versoes antigas -> AUTOCOMMIT.
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text("ALTER TYPE jobstatus ADD VALUE IF NOT EXISTS 'CANCELLED'"))
+    except Exception:
+        log.exception("Nao foi possivel adicionar CANCELLED ao enum jobstatus")
 
 
 def init_db(attempts: int = 30, delay: float = 2.0) -> None:
