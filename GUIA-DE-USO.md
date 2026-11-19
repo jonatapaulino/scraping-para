@@ -1,11 +1,20 @@
-# Guia de uso rápido
+# Guia de uso
 
 Tudo é feito pelo painel: **http://localhost:8000/ui**
 
 ## Ligar e desligar
-1. Abra o **Docker Desktop**.
+1. Abra o **Docker Desktop** (precisa estar aberto).
 2. Duplo clique em `iniciar.bat` — o painel abre sozinho.
 3. Para desligar: `parar.bat` (os dados ficam guardados).
+
+> Se o computador reiniciar, o sistema volta sozinho assim que o Docker Desktop abrir (a não ser que você tenha usado `parar.bat`). Para as agendas diárias funcionarem, o computador e o Docker precisam estar ligados.
+
+## Qual caminho usar?
+| O site... | Use |
+|---|---|
+| tem links de **PDFs** | **1. Secretarias** |
+| é uma **API (JSON)** ou uma **tabela** na página | **2. Fonte de dados** |
+| é o **Portal da Transparência** (folha, despesas, diárias…) | **3. Dados abertos** |
 
 ## 1. Site com lista de PDFs
 Seção **Secretarias** (formulário embaixo da tabela):
@@ -14,11 +23,12 @@ Seção **Secretarias** (formulário embaixo da tabela):
 |---|---|
 | SIGLA | nome curto da fonte (vira a pasta em `downloads/`) |
 | URL | a página onde estão os links dos PDFs |
-| profundidade | quantos cliques o robô anda a partir da URL até achar os PDFs. `0` = só aquela página, `1` = ela e as páginas que ela linka, `2` = mais um nível |
+| profundidade | quantos cliques o robô anda a partir da URL até achar os PDFs. `0` = só aquela página, `1` = ela e as páginas que ela linka, `2` = mais um nível (quanto maior, mais lento) |
 | PDFs | **vazio** = só financeiros (edital, contrato…) · `*` = **todos** · ou uma regex, ex.: `remunera\|inativ` |
 
 Marque **raspar agora** e clique em **+ Adicionar**.
-> Se a tarefa terminar com 0 PDFs, quase sempre é o filtro: coloque `*` no campo *PDFs*.
+
+> **Terminou com 0 PDFs?** Quase sempre é o filtro: coloque `*` no campo *PDFs* (✎ na tabela) e rode de novo.
 
 ## 2. Site com API (JSON) ou tabela na página
 Seção **⚙ Fonte de dados — qualquer site**:
@@ -27,25 +37,50 @@ Seção **⚙ Fonte de dados — qualquer site**:
 3. Clique em **🔍 Testar** — mostra as colunas e uma amostra, sem gravar nada.
 4. **Salvar fonte** (com *coletar agora* se quiser rodar já). Sai um CSV.
 
-Não faz login, formulário nem captcha. Se a tabela só aparece com JavaScript, marque *página com JavaScript*.
+Se a tabela só aparece com JavaScript, marque *página com JavaScript*. Se o site exige token, use *avançado → cabeçalhos* (`Authorization: Bearer …`).
+**Não funciona** com login, formulário com campos ou captcha.
 
-## 3. Dados abertos da Transparência (folha, despesas, diárias…)
-Seção **Dados abertos**: escolha o dataset, o período e os órgãos (ou *todos*) → **Coletar**.
+## 3. Dados abertos da Transparência
+Seção **Dados abertos**: escolha o dataset (folha, despesas, diárias…), o período e os órgãos (ou *todos*) → **Coletar**. Gera um CSV por mês/órgão. Esta seção **não tem agenda automática**: é sempre manual.
 
-## Acompanhar e controlar
-- **Progresso das tarefas** (topo): barra de cada tarefa em andamento. **cancelar** interrompe (o que já baixou fica).
-- **Tarefas recentes**: **⬇ zip** baixa tudo da tarefa; **cancelar** se ainda estiver rodando.
-- **Documentos**: cada arquivo tem ⬇ para baixar.
-- **Fila de erros**: botão *reprocessar* tenta de novo.
-- **Secretarias**: ✎ edita URL/profundidade/filtro/configuração · *desativar* tira da rodada diária · *excluir* remove a fonte e o histórico (os arquivos baixados **não** são apagados).
-
-## Onde ficam os arquivos
-`downloads/<sigla>/<ano>/…` no computador (e cópia no MinIO, console em http://localhost:9001).
+## A tabela Secretarias
+| Coluna | O que é |
+|---|---|
+| **Tipo** | **Portal** (baixa PDFs) · **Coleta** (API/tabela → CSV) · **Diário** (IOEPA) · **API** (Transparência) |
+| **Profundidade** / **PDFs** | só valem para Portal; ✎ edita |
+| **⏰ Agenda diária** | caixa + horário (veja abaixo) |
+| **Situação** | **Ativa** ou **Inativa** (fonte inativa não roda nem na agenda) |
+| **Ações** | *desativar/reativar* · *excluir* remove a fonte e o histórico (os arquivos baixados **não** são apagados). Fontes de Coleta: ✎ config abre o formulário para editar |
 
 ## Agendar raspagem diária
-Na tabela **Secretarias**, coluna **⏰ Agenda diária**: marque a caixa da fonte e escolha o horário (Brasília).
+Marque a caixa da fonte e escolha o horário (Brasília). **Nada roda sozinho sem essa caixa.**
 - Roda todo dia nesse horário; só vem o que for novo.
-- Se o computador/Docker estiver desligado na hora, roda assim que voltar.
-- Desmarque a caixa para parar. Fonte desativada também não roda.
-- Vale para portais, fontes de coleta e para o **IOEPA (Diário Oficial)** — nele, todo dia baixa só as edições novas do ano corrente.
-- O Docker precisa estar ligado para a agenda funcionar.
+- Se o computador/Docker estiver desligado na hora, roda assim que voltar (uma vez por dia).
+- Se você marcar depois do horário de hoje, começa só amanhã.
+- Desmarque para parar. Vale para Portal, Coleta e **IOEPA** (todo dia baixa só as edições novas do ano corrente).
+
+## Acompanhar e controlar
+- **Progresso das tarefas** (topo): barra de cada tarefa. **cancelar** interrompe (o que já baixou fica); **×** tira da lista.
+- **Tarefas recentes**: **⬇ zip** baixa tudo da tarefa.
+- **Documentos**: cada arquivo tem ⬇ para baixar.
+- **Fila de erros**: botão *reprocessar* tenta de novo.
+
+## Onde ficam os arquivos
+`downloads/<sigla>/<ano>/…` no computador (e cópia no MinIO, console em http://localhost:9001). A pasta `downloads/` não vai para o GitHub: **faça backup dela** se os arquivos forem importantes.
+
+## Problemas comuns
+| Sintoma | O que fazer |
+|---|---|
+| Painel não abre | Docker Desktop aberto? Rode `iniciar.bat` de novo |
+| Tarefa com 0 PDFs | filtro de PDFs → `*` (veja seção 1) |
+| **Testar** deu erro | leia a mensagem: costuma ser URL errada, "não é JSON" (use *tabela*) ou caminho inexistente |
+| Tarefa travada | **cancelar** e rodar de novo |
+| Falhas na lista | *Fila de erros → reprocessar* |
+| Mudou o site e parou de achar PDFs | aumente a **profundidade** ou ajuste o **filtro** |
+
+## Quando ainda precisa de ajuda técnica
+Só nestes casos (não dá para resolver pelo painel):
+- site com **login, formulário ou captcha**;
+- API que exige um fluxo próprio (vários passos) — vira código novo;
+- ajustes globais no `.env` (proxy, Google Drive, limites) — exige reiniciar;
+- **mudar o código** do sistema — siga o `FLUXO-DE-MUDANCA.md`.
