@@ -96,6 +96,13 @@ $("btn-requeue").addEventListener("click", async () => {
 
 // ---------- Secretarias ----------
 
+// profundidade em palavras (0 = só a página cadastrada)
+function rotuloProfundidade(n) {
+  if (n === null || n === undefined) return "padrão";
+  if (n === 0) return "só a página";
+  return n === 1 ? "1 nível" : `${n} níveis`;
+}
+
 async function loadSecretarias() {
   secretariasCache = await api("/secretarias");
   $("secretaria-checks").innerHTML = secretariasCache.length
@@ -121,7 +128,7 @@ async function loadSecretarias() {
               s.tipo === "crawl" ? ` <button class="mini" data-url-id="${s.id}" data-url="${s.url_base}" title="Editar URL">✎</button>`
               : s.tipo === "coleta" ? ` <button class="mini" data-coleta-id="${s.id}" title="Editar a configuração desta fonte (abre o formulário acima)">✎ config</button>` : ""
             }</td>` +
-            `<td class="c nowrap">${s.tipo === "crawl" ? `${s.max_depth ?? "padrão"} <button class="mini" data-depth-id="${s.id}" data-depth="${s.max_depth ?? ""}" title="Editar profundidade">✎</button>` : '<span class="muted">—</span>'}</td>` +
+            `<td class="c nowrap">${s.tipo === "crawl" ? `${rotuloProfundidade(s.max_depth)} <button class="mini" data-depth-id="${s.id}" data-depth="${s.max_depth ?? ""}" title="Editar profundidade">✎</button>` : '<span class="muted">—</span>'}</td>` +
             `<td class="c nowrap">${
               s.tipo === "coleta" ? "CSV" : s.tipo !== "crawl" ? '<span class="muted">—</span>' :
               `${s.pdf_filtro === null ? "padrão" : s.pdf_filtro === "" ? "todos" : `<code title="${s.pdf_filtro.replace(/"/g, "&quot;")}">regex</code>`} <button class="mini" data-filtro-id="${s.id}" data-filtro="${(s.pdf_filtro ?? "").replace(/"/g, "&quot;")}" data-filtro-null="${s.pdf_filtro === null}" title="Editar filtro de PDFs">✎</button>`
@@ -221,7 +228,7 @@ $("secs-tbody").addEventListener("click", async (e) => {
       loadSecretarias(); loadJobs(); loadDocuments();
     } else if (btn.dataset.depthId) {
       const cur = btn.dataset.depth;
-      const v = prompt("Profundidade (0-10; vazio = padrão do sistema)", cur);
+      const v = prompt("Profundidade: quantos cliques o robô anda a partir da URL cadastrada até achar os PDFs.\n• 0 = só a própria página\n• 1 = ela e as páginas que ela linka\n• 2, 3… = mais níveis (mais lento)\n• vazio = padrão do sistema", cur);
       if (v === null) return;
       const n = v.trim() === "" ? null : parseInt(v, 10);
       if (n !== null && (isNaN(n) || n < 0 || n > 10))

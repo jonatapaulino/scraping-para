@@ -14,7 +14,7 @@ Seção **Secretarias** (formulário embaixo da tabela):
 |---|---|
 | SIGLA | nome curto da fonte (vira a pasta em `downloads/`) |
 | URL | a página onde estão os links dos PDFs |
-| depth | cliques até a página dos PDFs. `0` = só aquela página |
+| profundidade | quantos cliques o robô anda a partir da URL até achar os PDFs. `0` = só aquela página, `1` = ela e as páginas que ela linka, `2` = mais um nível |
 | PDFs | **vazio** = só financeiros (edital, contrato…) · `*` = **todos** · ou uma regex, ex.: `remunera\|inativ` |
 
 Marque **raspar agora** e clique em **+ Adicionar**.

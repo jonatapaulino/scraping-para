@@ -141,14 +141,14 @@
   <section class="panel">
     <h2>Secretarias</h2>
     <table>
-      <thead><tr><th>Sigla</th><th class="c">Tipo</th><th>URL base</th><th class="c" title="Cliques até a página dos PDFs (só portais)">Depth</th><th class="c" title="Quais PDFs baixar nesta fonte (só portais)">PDFs</th><th title="Raspar esta fonte todo dia, no horário escolhido">⏰ Agenda diária</th><th class="c">Situação</th><th>Ações</th></tr></thead>
+      <thead><tr><th>Sigla</th><th class="c">Tipo</th><th>URL base</th><th class="c" title="Quantos cliques o robô anda a partir da URL cadastrada até achar os PDFs. 0 = só a própria página; 1 = ela e as páginas que ela linka; 2 = mais um nível…">Profundidade</th><th class="c" title="Quais PDFs baixar nesta fonte (só portais)">PDFs</th><th title="Raspar esta fonte todo dia, no horário escolhido">⏰ Agenda diária</th><th class="c">Situação</th><th>Ações</th></tr></thead>
       <tbody id="secs-tbody"><tr><td colspan="8" class="empty">carregando…</td></tr></tbody>
     </table>
     <p class="hint">⏰ <b>Agenda diária</b>: marque a caixa da fonte que deve ser raspada todo dia e escolha o horário (horário de Brasília). Se o computador/Docker estiver desligado na hora, ela roda assim que voltar. Fonte desativada não roda.</p>
     <form id="sec-form" class="inline-form">
       <input id="sec-sigla" placeholder="SIGLA" maxlength="20" required>
       <input id="sec-url" placeholder="https://portal.pa.gov.br/..." maxlength="255" required>
-      <input id="sec-depth" type="number" min="0" max="10" placeholder="depth (padrão)" title="Profundidade do crawl: cliques da página cadastrada até o link do PDF. Vazio = padrão." style="width:9rem">
+      <input id="sec-depth" type="number" min="0" max="10" placeholder="profundidade (padrão)" title="Quantos cliques o robô anda a partir da URL cadastrada até achar os PDFs. 0 = só a própria página; 1 = ela e as páginas que ela linka; 2 = mais um nível… Vazio = padrão do sistema." style="width:9rem">
       <input id="sec-filtro" placeholder="PDFs: vazio = só financeiros · * = todos · ou regex" maxlength="255" title="Quais PDFs baixar. Vazio = padrão do sistema (editais, contratos, convênios…). * = todos os PDFs do site. Ou uma regex, ex.: remunera|inativ" style="width:19rem">
       <label class="nowrap" title="Dispara a raspagem logo após cadastrar"><input id="sec-run" type="checkbox"> raspar agora</label>
       <button class="primary">+ Adicionar</button>
@@ -187,6 +187,6 @@
 </main>
 
 <div id="toast"></div>
-<script src="app.js?v=20"></script>
+<script src="app.js?v=21"></script>
 </body>
 </html>
