@@ -133,7 +133,10 @@ async function loadSecretarias() {
             }</button>${
               s.tipo === "crawl" || s.tipo === "coleta" ? ` <button class="mini" data-del-id="${s.id}" data-sigla="${s.sigla}" title="Excluir fonte e histórico (os arquivos baixados ficam)">excluir</button>` : ""
             }</td>` +
-            `<td class="nowrap">${s.tipo === "crawl" ? "" : s.tipo === "coleta" ? `<span class="badge COLETA">Coleta</span>` : `<span class="badge API">${s.sigla === "IOEPA" ? "Diário" : "API"}</span>`}</td></tr>`
+            `<td class="nowrap"><span class="badge ${s.tipo === "crawl" ? "PORTAL" : s.tipo === "coleta" ? "COLETA" : "API"}" title="${
+              s.tipo === "crawl" ? "Portal: baixa os PDFs do site" : s.tipo === "coleta" ? "Coleta: API ou tabela, gera CSV"
+              : s.sigla === "IOEPA" ? "Diário Oficial do Estado" : "Fonte de API (dados abertos)"
+            }">${s.tipo === "crawl" ? "Portal" : s.tipo === "coleta" ? "Coleta" : s.sigla === "IOEPA" ? "Diário" : "API"}</span></td></tr>`
         )
         .join("")
     : '<tr><td colspan="8" class="empty">vazio</td></tr>';
