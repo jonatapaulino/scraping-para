@@ -112,31 +112,32 @@ async function loadSecretarias() {
     ? secretariasCache
         .map(
           (s) =>
-            `<tr><td class="nowrap"><b>${s.sigla}</b></td><td class="url">${s.url_base}${
+            `<tr class="${s.is_ativa ? "" : "inativa"}"><td class="nowrap"><b>${s.sigla}</b></td>` +
+            `<td class="c nowrap"><span class="badge ${s.tipo === "crawl" ? "PORTAL" : s.tipo === "coleta" ? "COLETA" : "API"}" title="${
+              s.tipo === "crawl" ? "Portal: baixa os PDFs do site" : s.tipo === "coleta" ? "Coleta: API ou tabela, gera CSV"
+              : s.sigla === "IOEPA" ? "Diário Oficial do Estado" : "Fonte de API (dados abertos)"
+            }">${s.tipo === "crawl" ? "Portal" : s.tipo === "coleta" ? "Coleta" : s.sigla === "IOEPA" ? "Diário" : "API"}</span></td>` +
+            `<td class="url" title="${s.url_base}">${s.url_base}${
               s.tipo === "crawl" ? ` <button class="mini" data-url-id="${s.id}" data-url="${s.url_base}" title="Editar URL">✎</button>`
               : s.tipo === "coleta" ? ` <button class="mini" data-coleta-id="${s.id}" title="Editar a configuração desta fonte (abre o formulário acima)">✎ config</button>` : ""
             }</td>` +
-            `<td class="nowrap">${s.tipo === "coleta" ? "—" : `${s.max_depth ?? "padrão"} <button class="mini" data-depth-id="${s.id}" data-depth="${s.max_depth ?? ""}" title="Editar profundidade">✎</button>`}</td>` +
-            `<td class="nowrap">${
-              s.tipo === "coleta" ? "CSV" : s.tipo !== "crawl" ? "" :
-              (s.pdf_filtro === null ? "padrão" : s.pdf_filtro === "" ? "todos" : `<code title="${s.pdf_filtro.replace(/"/g, "&quot;")}">regex</code>`)
-            } ${s.tipo === "crawl" ? `<button class="mini" data-filtro-id="${s.id}" data-filtro="${(s.pdf_filtro ?? "").replace(/"/g, "&quot;")}" data-filtro-null="${s.pdf_filtro === null}" title="Editar filtro de PDFs">✎</button>` : ""}</td>` +
-            `<td>${s.is_ativa ? "✅" : "—"}</td>` +
+            `<td class="c nowrap">${s.tipo === "crawl" ? `${s.max_depth ?? "padrão"} <button class="mini" data-depth-id="${s.id}" data-depth="${s.max_depth ?? ""}" title="Editar profundidade">✎</button>` : '<span class="muted">—</span>'}</td>` +
+            `<td class="c nowrap">${
+              s.tipo === "coleta" ? "CSV" : s.tipo !== "crawl" ? '<span class="muted">—</span>' :
+              `${s.pdf_filtro === null ? "padrão" : s.pdf_filtro === "" ? "todos" : `<code title="${s.pdf_filtro.replace(/"/g, "&quot;")}">regex</code>`} <button class="mini" data-filtro-id="${s.id}" data-filtro="${(s.pdf_filtro ?? "").replace(/"/g, "&quot;")}" data-filtro-null="${s.pdf_filtro === null}" title="Editar filtro de PDFs">✎</button>`
+            }</td>` +
             `<td class="nowrap">${
               s.tipo === "crawl" || s.tipo === "coleta" || s.sigla === "IOEPA"
                 ? `<input type="checkbox" data-agenda-id="${s.id}" ${s.agendada ? "checked" : ""} title="Raspar todo dia"> ` +
                   `<input type="time" data-hora-id="${s.id}" value="${s.agenda_hora || "06:00"}" ${s.agendada ? "" : "disabled"} style="width:6.5rem">`
-                : "—"
+                : '<span class="muted">—</span>'
             }</td>` +
-            `<td><button class="mini" data-toggle-id="${s.id}" data-ativa="${s.is_ativa}">${
+            `<td class="c nowrap"><span class="badge ${s.is_ativa ? "COMPLETED" : "CANCELLED"}">${s.is_ativa ? "Ativa" : "Inativa"}</span></td>` +
+            `<td class="nowrap"><button class="mini" data-toggle-id="${s.id}" data-ativa="${s.is_ativa}">${
               s.is_ativa ? "desativar" : "reativar"
             }</button>${
               s.tipo === "crawl" || s.tipo === "coleta" ? ` <button class="mini" data-del-id="${s.id}" data-sigla="${s.sigla}" title="Excluir fonte e histórico (os arquivos baixados ficam)">excluir</button>` : ""
-            }</td>` +
-            `<td class="nowrap"><span class="badge ${s.tipo === "crawl" ? "PORTAL" : s.tipo === "coleta" ? "COLETA" : "API"}" title="${
-              s.tipo === "crawl" ? "Portal: baixa os PDFs do site" : s.tipo === "coleta" ? "Coleta: API ou tabela, gera CSV"
-              : s.sigla === "IOEPA" ? "Diário Oficial do Estado" : "Fonte de API (dados abertos)"
-            }">${s.tipo === "crawl" ? "Portal" : s.tipo === "coleta" ? "Coleta" : s.sigla === "IOEPA" ? "Diário" : "API"}</span></td></tr>`
+            }</td></tr>`
         )
         .join("")
     : '<tr><td colspan="8" class="empty">vazio</td></tr>';

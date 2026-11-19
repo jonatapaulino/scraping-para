@@ -237,3 +237,13 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .prev-wrap th, .prev-wrap td { white-space: nowrap; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; }
 .badge.COLETA { background: #a371f733; color: #a371f7; }
 .badge.PORTAL { background: #2ea04333; color: #3fb950; }
+
+/* tabela Secretarias */
+th.c, td.c { text-align: center; }
+td.url { max-width: 420px; }
+tr.inativa td { opacity: .55; }
+tr.inativa td:last-child { opacity: 1; }
+.muted { color: var(--muted); }
+table + .hint { margin: 12px 0 10px; }
+#sec-form { margin-top: 6px; }
+td input[type="checkbox"], td input[type="time"] { vertical-align: middle; }
