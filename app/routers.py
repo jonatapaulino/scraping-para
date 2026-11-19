@@ -589,7 +589,7 @@ def progresso_tarefas(s: Session = Depends(get_session)):
         .join(Secretaria, Secretaria.id == ScrapingJob.secretaria_id)
         .where(
             (ScrapingJob.status == JobStatus.RUNNING)
-            | (ScrapingJob.completed_at >= limite)
+            | ((ScrapingJob.completed_at >= limite) & (ScrapingJob.status != JobStatus.CANCELLED))
         )
         .order_by(ScrapingJob.started_at.desc())
         .limit(30)
