@@ -68,6 +68,14 @@ main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
   gap: 6px;
 }
 .card.warn .card-value { color: var(--yellow); }
+.card-agora { grid-column: span 2; }
+@media (max-width: 700px) { .card-agora { grid-column: auto; } }
+.card-sub { color: var(--muted); font-size: 12px; }
+.card .bar { margin-top: 2px; }
+.card-value.ok { color: var(--green); }
+details.tecnico { margin: -8px 0 18px; color: var(--muted); font-size: 12px; }
+details.tecnico summary { cursor: pointer; width: max-content; }
+details.tecnico span { display: inline-block; margin: 6px 18px 0 0; }
 .card-label { color: var(--muted); font-size: 12px; }
 .card-value { font-size: 26px; font-weight: 600; }
 

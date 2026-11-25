@@ -111,6 +111,26 @@ def mover(de: str, para: str) -> None:
     os.replace(caminho(de), destino)
 
 
+def resumo() -> dict:
+    """Quantidade e tamanho total dos arquivos guardados + espaco livre no disco."""
+    n = total = 0
+    for dirpath, dirs, files in os.walk(raiz()):
+        dirs[:] = [d for d in dirs if not d.startswith(("_manutencao", "."))]
+        for nome in files:
+            if nome.startswith("."):
+                continue
+            try:
+                total += os.stat(os.path.join(dirpath, nome)).st_size
+                n += 1
+            except OSError:
+                pass
+    try:
+        livre = shutil.disk_usage(raiz()).free
+    except OSError:
+        livre = None
+    return {"arquivos": n, "bytes": total, "livre_bytes": livre}
+
+
 def listar(prefixo: str = "") -> Iterator[str]:
     """Chaves (caminhos relativos, com '/') de todos os arquivos sob `prefixo`.
     Ignora temporarios de escrita ('.parcial-*') e a pasta _manutencao."""

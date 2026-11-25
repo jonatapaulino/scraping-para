@@ -281,6 +281,98 @@ def overview(s: Session = Depends(get_session)):
     )
 
 
+def _nome_tarefa(job: ScrapingJob, sigla: str) -> str:
+    if job.tipo == "crawl":
+        return f"{sigla} (varredura do portal)"
+    if job.tipo == "coleta":
+        return f"{sigla} (fonte de dados)"
+    return _DATASET_PT.get(job.tipo, job.tipo)
+
+
+@router.get("/resumo")
+def resumo_painel(s: Session = Depends(get_session)):
+    """Cards do topo do painel, em linguagem de quem usa: o que esta rodando e em
+    que ponto, a fila de coletas, quanto ja esta guardado e quanto espaco sobra."""
+    from app import broker
+
+    rodando = s.execute(
+        select(ScrapingJob, Secretaria.sigla)
+        .join(Secretaria, Secretaria.id == ScrapingJob.secretaria_id)
+        .where(ScrapingJob.status == JobStatus.RUNNING)
+        .order_by(ScrapingJob.started_at)
+    ).all()
+    agora_lista = []
+    for job, sigla in rodando:
+        cont = dict(
+            s.execute(
+                select(Documento.status_download, func.count())
+                .where(Documento.job_id == job.id)
+                .group_by(Documento.status_download)
+            ).all()
+        )
+        feitos = sum(v for k, v in cont.items() if k != DownloadStatus.PENDING)
+        total = max(job.total_pdfs_encontrados or 0, sum(cont.values()))
+        agora_lista.append({
+            "nome": _nome_tarefa(job, sigla),
+            "feitos": feitos,
+            "total": total,
+            "percentual": min(100, round(feitos * 100 / total, 1)) if total else None,
+            "desde": job.started_at.isoformat() if job.started_at else None,
+        })
+
+    fila = dict(s.execute(select(ColetaFila.status, func.count()).group_by(ColetaFila.status)).all())
+    item_atual = s.execute(
+        select(ColetaFila).where(ColetaFila.status == "RODANDO").order_by(ColetaFila.id).limit(1)
+    ).scalar_one_or_none()
+    total_fila = sum(fila.values())
+    terminadas = sum(fila.get(k, 0) for k in ("CONCLUIDA", "FALHOU", "CANCELADA"))
+
+    docs = dict(
+        s.execute(select(Documento.status_download, func.count()).group_by(Documento.status_download)).all()
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    ok_24h = s.execute(
+        select(func.count(Documento.id)).where(
+            Documento.status_download == DownloadStatus.SUCCESS, Documento.downloaded_at > cutoff
+        )
+    ).scalar_one()
+    falhas_24h = s.execute(
+        select(func.count(Documento.id)).where(
+            Documento.status_download == DownloadStatus.FAILED, Documento.created_at > cutoff
+        )
+    ).scalar_one()
+    filas = _cache_curto("filas", 10, broker.queue_depths)
+    try:
+        guardado = _cache_curto("resumo:arquivos", 60, storage.resumo)
+    except OSError:
+        guardado = {"arquivos": None, "bytes": None, "livre_bytes": None}
+
+    return {
+        "agora": agora_lista,
+        "fila": {
+            "total": total_fila,
+            "terminadas": terminadas,
+            "aguardando": fila.get("AGUARDANDO", 0),
+            "falharam": fila.get("FALHOU", 0),
+            "atual": _DATASET_PT.get(item_atual.dataset, item_atual.dataset) if item_atual else None,
+            "posicao_atual": terminadas + 1 if item_atual else None,
+        },
+        "guardado": guardado,
+        "ultimas_24h": {"baixados": ok_24h, "falhas": falhas_24h},
+        "falhas": {
+            "total": docs.get(DownloadStatus.FAILED, 0),
+            "na_fila_de_erros": filas.get(config.Q_DEAD, -1),
+        },
+        "sem_dados": docs.get(DownloadStatus.SEM_DADOS, 0),
+        "tecnico": {
+            "fila_descoberta": filas.get(config.Q_DISCOVERY, -1),
+            "fila_download": filas.get(config.Q_DOWNLOAD, -1),
+            "fila_erros": filas.get(config.Q_DEAD, -1),
+            "tarefas_rodando": len(rodando),
+        },
+    }
+
+
 @router.get("/documents", response_model=Page[DocumentoOut])
 def list_documents(
     secretaria_id: Optional[uuid.UUID] = None,
