@@ -526,6 +526,38 @@ function montaOrgaos(base, doDataset) {
   return linhas.join("");
 }
 
+// periodo escolhido pela pessoa (de/até) — sobrevive a troca de dataset e às recargas
+const periodoEscolhido = { de: null, ate: null };
+$("folha-de").addEventListener("change", () => { periodoEscolhido.de = $("folha-de").value; });
+$("folha-ate").addEventListener("change", () => { periodoEscolhido.ate = $("folha-ate").value; });
+
+// Reaplica o valor escolhido; se o dataset novo for anual (sem o mes), usa o
+// mesmo ano: o primeiro mes/ano para "de", o ultimo para "até"
+function restauraPeriodo(sel, valor, qual) {
+  if (!valor) return;
+  const ops = [...sel.options].map((o) => o.value);
+  if (ops.includes(valor)) { sel.value = valor; return; }
+  const ano = valor.split("-")[0];
+  const doAno = ops.filter((v) => v.split("-")[0] === ano);
+  if (doAno.length) sel.value = qual === "primeiro" ? doAno[0] : doAno[doAno.length - 1];
+}
+
+const rotuloPeriodo = (v) => {
+  const [a, m] = (v || "").split("-");
+  return m ? `${a}-${m.padStart(2, "0")}` : a;
+};
+
+// Texto da confirmacao: mostra exatamente o que vai ser pedido
+function resumoColeta(acao, orgaos) {
+  const ds = $("folha-dataset");
+  const semPeriodo = $("folha-de").disabled;
+  const per = semPeriodo ? "sem período (inventário atual)"
+    : `${rotuloPeriodo($("folha-de").value)} até ${rotuloPeriodo($("folha-ate").value)}`;
+  const orgs = orgaos ? `${orgaos.length} órgão(s): ${orgaos.slice(0, 8).join(", ")}${orgaos.length > 8 ? "…" : ""}` : "todos os órgãos";
+  return `${acao}?\n\n• Dataset: ${ds.options[ds.selectedIndex].text}\n• Período: ${per}\n• Órgãos: ${orgs}` +
+    `${$("folha-force").checked ? "\n• Recoletar: sim (consulta tudo de novo)" : ""}`;
+}
+
 async function loadFolhaOpcoes() {
   try {
     const ds = $("folha-dataset").value;
@@ -548,6 +580,10 @@ async function loadFolhaOpcoes() {
       const ini = o.periodos.findIndex((p) => p.ano === o.periodos[o.periodos.length - 1].ano);
       $("folha-de").selectedIndex = Math.max(0, ini);
       $("folha-ate").selectedIndex = o.periodos.length - 1;
+      // ...mas o periodo que VOCE escolheu tem prioridade: antes, trocar o dataset
+      // (ou a recarga automatica) voltava tudo para o ano corrente sem avisar
+      restauraPeriodo($("folha-de"), periodoEscolhido.de, "primeiro");
+      restauraPeriodo($("folha-ate"), periodoEscolhido.ate, "ultimo");
     }
     let base = o.orgaos;
     if (ds !== "*" && ds !== "despesas") {
@@ -593,6 +629,7 @@ $("btn-folha").addEventListener("click", async () => {
   if (!todos && !orgaos.length) return toast("Selecione ao menos um órgão (ou marque todos)", true);
   const [anoIni, mesIni] = $("folha-de").value.split("-").map(Number);
   const [anoFim, mesFim] = $("folha-ate").value.split("-").map(Number);
+  if (!confirm(resumoColeta("Coletar agora", orgaos))) return;
   $("btn-folha").disabled = true;
   try {
     const r = await api("/transparencia/start", {
@@ -653,6 +690,7 @@ $("btn-fila").addEventListener("click", async () => {
   if (!todos && !orgaos.length) return toast("Selecione ao menos um órgão (ou marque todos)", true);
   const [anoIni, mesIni] = $("folha-de").value.split("-").map(Number);
   const [anoFim, mesFim] = $("folha-ate").value.split("-").map(Number);
+  if (!confirm(resumoColeta("Pôr na fila (uma por vez)", orgaos))) return;
   $("btn-fila").disabled = true;
   try {
     const r = await api("/fila", {
@@ -678,6 +716,15 @@ $("fila-tbody").addEventListener("click", async (e) => {
   if (!b) return;
   try {
     await api(`/fila/${b.dataset.filaDel}`, { method: "DELETE" });
+    loadFila();
+  } catch (err) { toast(err.message, true); }
+});
+
+$("fila-esvaziar").addEventListener("click", async () => {
+  if (!confirm("Tirar da fila tudo o que ainda não começou?\n(A coleta que está rodando continua — para ela, use cancelar no progresso.)")) return;
+  try {
+    const r = await api("/fila/esvaziar", { method: "POST" });
+    toast(`${r.removidos} coleta(s) tirada(s) da fila`);
     loadFila();
   } catch (err) { toast(err.message, true); }
 });

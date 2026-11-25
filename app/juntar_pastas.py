@@ -4,26 +4,23 @@ FUND_SANTA_CASA; nomes com acento quebrado como AG_NCIA_...).
 
 Para cada pasta de 1o nivel em MAIUSCULAS (pastas de orgao dos datasets),
 calcula o nome novo com o mesmo orgao_slug que o sistema usa agora e move os
-arquivos para la — no MinIO, em downloads/ e no banco (documento.minio_path).
-O rotulo antigo dentro do nome do CSV tambem e trocado.
+arquivos para la, na pasta de downloads, atualizando o banco
+(documento.minio_path). O rotulo antigo dentro do nome do CSV tambem e trocado.
 
 Seguro: so SIMULA, a menos que receba --aplicar. Nunca sobrescreve: se o
 destino ja existe com conteudo DIFERENTE, o arquivo fica onde esta e entra no
 relatorio de conflitos. Destino identico = so remove a copia antiga.
 
-Uso (dentro do container, com o sistema no ar):
+Uso (com o sistema no ar):
   docker compose exec worker-download python -m app.juntar_pastas            # simula
   docker compose exec worker-download python -m app.juntar_pastas --aplicar  # executa
 """
 import argparse
 import hashlib
-import os
 import re
 import sys
 from collections import defaultdict
 
-from minio.commonconfig import CopySource
-from minio.error import S3Error
 from sqlalchemy import select, update
 
 from app import config, storage, transparencia
@@ -32,43 +29,12 @@ from app.models import Documento
 from app.routers import _parse_unidade
 
 
-def _sha_objeto(mc, key: str) -> str:
-    obj = mc.get_object(config.MINIO_BUCKET, key)
-    try:
-        h = hashlib.sha256()
-        for chunk in obj.stream(256 * 1024):
+def _sha(key: str) -> str:
+    h = hashlib.sha256()
+    with storage.abrir(key) as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
-        return h.hexdigest()
-    finally:
-        obj.close()
-        obj.release_conn()
-
-
-def _existe(mc, key: str) -> bool:
-    try:
-        mc.stat_object(config.MINIO_BUCKET, key)
-        return True
-    except S3Error:
-        return False
-
-
-def _move_local(antigo: str, novo: str, aplicar: bool) -> str:
-    if not config.LOCAL_EXPORT_DIR:
-        return "sem pasta local"
-    src = os.path.join(config.LOCAL_EXPORT_DIR, antigo)
-    dst = os.path.join(config.LOCAL_EXPORT_DIR, novo)
-    if not os.path.exists(src):
-        return "local ausente"
-    if os.path.exists(dst):
-        if os.path.getsize(src) == os.path.getsize(dst):
-            if aplicar:
-                os.remove(src)
-            return "local: copia antiga removida"
-        return "local: CONFLITO (mantido)"
-    if aplicar:
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        os.replace(src, dst)
-    return "local movido"
+    return h.hexdigest()
 
 
 def _quebrado(nome: str) -> str:
@@ -88,7 +54,10 @@ def _mapa_legado() -> dict[str, str]:
     return {k: next(iter(v)) for k, v in vistos.items() if len(v) == 1}
 
 
-def _limpa_vazias(raiz: str) -> None:
+def _limpa_vazias() -> None:
+    import os
+
+    raiz = str(storage.raiz())
     for dirpath, _dirs, _files in os.walk(raiz, topdown=False):
         if dirpath != raiz:
             try:
@@ -100,8 +69,7 @@ def _limpa_vazias(raiz: str) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--aplicar", action="store_true", help="executa (sem isso, so simula)")
-    args = ap.parse_args()
-    aplicar = args.aplicar
+    aplicar = ap.parse_args().aplicar
 
     if not transparencia._sigla_canon():
         print("ERRO: a API de orgaos (despesas/empenhos) nao respondeu — sem ela nao da "
@@ -120,13 +88,11 @@ def main() -> int:
         ):
             _, org = _parse_unidade(url)
             if org and "+" not in org and "=" not in org:
-                rotulo_de[mp.split("/", 1)[1]] = org
+                rotulo_de[storage.chave(mp)] = org
 
     legado = _mapa_legado()
-    mc = storage.ensure_bucket()
     planos: dict[str, list[tuple[str, str]]] = defaultdict(list)  # pasta -> [(chave, nova)]
-    for obj in mc.list_objects(config.MINIO_BUCKET, recursive=True):
-        key = obj.object_name
+    for key in storage.listar():
         topo, _, resto = key.partition("/")
         if topo != topo.upper() or not resto:  # crawl (sigla minuscula)/datasets sem orgao
             continue
@@ -166,12 +132,11 @@ def main() -> int:
     origem_de: dict[str, str] = {}
     for topo, itens in sorted(planos.items()):
         for key, novo_key in itens:
-
-            # destino ja ocupado: no MinIO, ou (na simulacao) por outro arquivo
+            # destino ja ocupado: na pasta, ou (na simulacao) por outro arquivo
             # que este mesmo plano moveria antes para la
-            ref = novo_key if _existe(mc, novo_key) else origem_de.get(novo_key)
+            ref = novo_key if storage.existe(novo_key) else origem_de.get(novo_key)
             if ref:
-                if _sha_objeto(mc, ref) != _sha_objeto(mc, key):
+                if _sha(ref) != _sha(key):
                     conflitos.append((key, novo_key))
                     continue
                 acao = "identico ao destino — copia antiga removida"
@@ -182,8 +147,9 @@ def main() -> int:
                 origem_de[novo_key] = key
             if aplicar:
                 if acao == "movido":
-                    mc.copy_object(config.MINIO_BUCKET, novo_key, CopySource(config.MINIO_BUCKET, key))
-                mc.remove_object(config.MINIO_BUCKET, key)
+                    storage.mover(key, novo_key)
+                else:
+                    storage.remover(key)
                 with SessionLocal() as s:
                     s.execute(
                         update(Documento)
@@ -191,11 +157,10 @@ def main() -> int:
                         .values(minio_path=f"{config.MINIO_BUCKET}/{novo_key}")
                     )
                     s.commit()
-            local = _move_local(key, novo_key, aplicar)
-            print(f"  [{acao}; {local}] {key} -> {novo_key}")
+            print(f"  [{acao}] {key} -> {novo_key}")
 
-    if aplicar and config.LOCAL_EXPORT_DIR:
-        _limpa_vazias(config.LOCAL_EXPORT_DIR)
+    if aplicar:
+        _limpa_vazias()
 
     print(f"\nResumo: {movidos} movidos, {removidos} copias identicas removidas, "
           f"{len(conflitos)} conflitos (mantidos onde estao).")

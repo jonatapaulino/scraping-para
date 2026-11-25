@@ -1,3 +1,5 @@
+# Arquivos baixados: UMA copia, so na pasta DOWNLOADS_DIR (padrao ./downloads).
+# Para usar outro disco (ex.: HD externo E:), no .env: DOWNLOADS_DIR=E:/scraper-downloads
 services:
   rabbitmq:
     restart: unless-stopped
@@ -36,19 +38,6 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
-  minio:
-    restart: unless-stopped
-    # versao fixa (a mesma que ja rodava): 'latest' mudava sozinha a cada rebuild
-    image: bitnamilegacy/minio@sha256:451fe6858cb770cc9d0e77ba811ce287420f781c7c1b806a386f6896471a349c
-    ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
-      MINIO_BROWSER: "on"
-    volumes:
-      - minio-data:/bitnami/minio/data
 
   browserless:
     restart: unless-stopped
@@ -64,6 +53,8 @@ services:
     build: .
     command: python -m app.main
     env_file: .env
+    volumes:
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
     ports:
       - "${PAINEL_BIND:-127.0.0.1}:8000:8000"
     depends_on:
@@ -71,14 +62,14 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      minio:
-        condition: service_started
 
   worker-discovery:
     build: .
     restart: unless-stopped
     command: celery -A app.celery_app worker -Q q.discovery -c 2 -n discovery@%h --loglevel=INFO --max-tasks-per-child=200
     env_file: .env
+    volumes:
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
     deploy:
       replicas: 1
     depends_on:
@@ -95,7 +86,7 @@ services:
     command: celery -A app.celery_app worker -Q q.download -c 4 -n download@%h --loglevel=INFO --max-tasks-per-child=200
     env_file: .env
     volumes:
-      - ./downloads:/downloads
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
       - ./secrets:/secrets:ro
     deploy:
       replicas: 1
@@ -104,8 +95,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      minio:
-        condition: service_started
 
   worker-control:
     # agenda diaria, reconciliador e disparos do Beat: fila propria (q.control)
@@ -114,6 +103,8 @@ services:
     restart: unless-stopped
     command: celery -A app.celery_app worker -Q q.control -c 1 -n control@%h --loglevel=INFO --max-tasks-per-child=200
     env_file: .env
+    volumes:
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -145,4 +136,3 @@ services:
 volumes:
   rabbitmq-data:
   postgres-data:
-  minio-data:

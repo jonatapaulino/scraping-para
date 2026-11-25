@@ -37,8 +37,11 @@ MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "raw-docs")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
-# Pasta local (bind mount no host) onde os PDFs tambem sao gravados; vazio = so MinIO
-LOCAL_EXPORT_DIR = os.getenv("LOCAL_EXPORT_DIR", "")
+# Pasta (dentro do container) onde os arquivos baixados ficam — UNICA copia.
+# No host ela e a DOWNLOADS_DIR do docker-compose (padrao ./downloads).
+# LOCAL_EXPORT_DIR e o nome antigo da mesma configuracao (ainda aceito).
+ARQUIVOS_DIR = os.getenv("ARQUIVOS_DIR") or os.getenv("LOCAL_EXPORT_DIR") or "/downloads"
+LOCAL_EXPORT_DIR = ARQUIVOS_DIR  # compatibilidade com o codigo/.env antigos
 
 BROWSERLESS_URL = os.getenv("BROWSERLESS_URL", "http://browserless:3000")
 BROWSERLESS_TOKEN = os.getenv("BROWSERLESS_TOKEN", "scraper")

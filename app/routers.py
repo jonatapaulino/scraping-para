@@ -13,7 +13,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import paginate
-from minio.error import S3Error
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -184,26 +183,17 @@ def download_job(job_id: uuid.UUID, s: Session = Depends(get_session)):
     ).scalars().all()
     if not paths:
         raise HTTPException(404, "Esta tarefa ainda nao tem arquivos baixados")
-    minio = storage.client()
     fd, tmp_path = tempfile.mkstemp(suffix=".zip")
     os.close(fd)
     try:
         with zipfile.ZipFile(tmp_path, "w", allowZip64=True) as zf:
             for mp in paths:
-                key = mp.split("/", 1)[1]
+                key = storage.chave(mp)
                 tipo = zipfile.ZIP_DEFLATED if key.lower().endswith(".csv") else zipfile.ZIP_STORED
-                try:
-                    obj = minio.get_object(config.MINIO_BUCKET, key)
-                except S3Error:
-                    log.warning("Objeto ausente ao montar zip: %s", key)
+                if not storage.existe(key):
+                    log.warning("Arquivo ausente ao montar zip: %s", key)
                     continue
-                try:
-                    with zf.open(zipfile.ZipInfo(key), "w", force_zip64=True) as dst:
-                        for chunk in obj.stream(256 * 1024):
-                            dst.write(chunk)
-                finally:
-                    obj.close()
-                    obj.release_conn()
+                zf.write(storage.caminho(key), arcname=key, compress_type=tipo)
     except Exception:
         os.remove(tmp_path)
         raise
@@ -464,31 +454,16 @@ def document_file(doc_id: uuid.UUID, download: bool = False, s: Session = Depend
     doc = s.get(Documento, doc_id)
     if doc is None or not doc.minio_path:
         raise HTTPException(404, "Documento nao baixado")
-    key = doc.minio_path.split("/", 1)[1]
-    minio = storage.client()
-    try:
-        minio.stat_object(config.MINIO_BUCKET, key)
-    except S3Error as exc:
-        if exc.code in ("NoSuchKey", "NoSuchObject"):
-            raise HTTPException(404, "Objeto ausente no storage")
-        raise HTTPException(502, "Storage indisponivel")
-    obj = minio.get_object(config.MINIO_BUCKET, key)
-
-    def _iter():
-        try:
-            yield from obj.stream(256 * 1024)
-        finally:
-            obj.close()
-            obj.release_conn()
-
+    key = storage.chave(doc.minio_path)
+    if not storage.existe(key):
+        raise HTTPException(404, "Arquivo nao esta mais na pasta de downloads")
     filename = key.rsplit("/", 1)[-1]
     media_type = "text/csv" if filename.lower().endswith(".csv") else "application/pdf"
-    return StreamingResponse(
-        _iter(),
+    return FileResponse(
+        storage.caminho(key),
         media_type=media_type,
-        headers={
-            "Content-Disposition": f'{"attachment" if download else "inline"}; filename="{filename}"'
-        },
+        filename=filename,
+        content_disposition_type="attachment" if download else "inline",
     )
 
 
@@ -633,6 +608,15 @@ def remover_da_fila(item_id: int, s: Session = Depends(get_session)):
     return {"removido": item_id}
 
 
+@router.post("/fila/esvaziar")
+def esvaziar_fila(s: Session = Depends(get_session)):
+    """Tira da fila tudo o que AINDA NAO comecou (a que esta rodando continua —
+    para ela, use cancelar no progresso)."""
+    n = s.execute(delete(ColetaFila).where(ColetaFila.status == "AGUARDANDO")).rowcount
+    s.commit()
+    return {"removidos": n}
+
+
 @router.post("/fila/limpar")
 def limpar_fila(s: Session = Depends(get_session)):
     """Tira da lista os itens ja terminados (concluidos, com falha ou cancelados)."""
@@ -649,8 +633,8 @@ def progresso_diario(s: Session = Depends(get_session)):
 
 
 def _dados_diario(s: Session, anos_filtro: Optional[list] = None):
-    """Progresso do download do Diario Oficial (IOEPA): PDFs ja guardados no
-    MinIO por ano x edicoes publicadas no site da IOEPA (total do ano).
+    """Progresso do download do Diario Oficial (IOEPA): PDFs ja guardados na
+    pasta de downloads por ano x edicoes publicadas no site da IOEPA (total do ano).
     anos_filtro: considera so esses anos (progresso de UMA tarefa)."""
     from app import datasets
 
@@ -658,19 +642,17 @@ def _dados_diario(s: Session, anos_filtro: Optional[list] = None):
 
     def _conta() -> dict[int, int]:
         out: dict[int, int] = {}
-        for obj in storage.client().list_objects(
-            config.MINIO_BUCKET, prefix=prefixo, recursive=True
-        ):
-            partes = obj.object_name[len(prefixo):].split("/")
+        for key in storage.listar(prefixo.rstrip("/")):
+            partes = key[len(prefixo):].split("/")
             if len(partes) >= 2 and partes[0].isdigit():
                 out[int(partes[0])] = out.get(int(partes[0]), 0) + 1
         return out
 
     try:
         contagem = _cache_curto("diario:contagem", 20, _conta)
-    except S3Error:
-        log.exception("Falha ao listar o diario no MinIO")
-        raise HTTPException(502, "MinIO indisponivel no momento")
+    except OSError:
+        log.exception("Falha ao listar o diario na pasta de downloads")
+        raise HTTPException(502, "Pasta de downloads indisponivel no momento")
 
     anos = []
     for ano in sorted(contagem):

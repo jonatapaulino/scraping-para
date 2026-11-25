@@ -19,7 +19,6 @@ import pika
 from bs4 import BeautifulSoup
 from celery import Task
 from celery.signals import worker_ready
-from minio.error import S3Error
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, OperationalError as SAOperationalError
@@ -46,14 +45,13 @@ SPOOL_MAX_BYTES = 64 * 1024 * 1024
 PDF_MAGIC = b"%PDF-"
 SKIP_SCHEMES = ("mailto:", "javascript:", "tel:", "#")
 
-# S3Error/urllib3: falhas de rede contra o MinIO local sao tao transientes
-# quanto falhas de download — sem isso a task morria direto na DLX.
+# urllib3: falhas de rede sao tao transientes quanto as de download — sem
+# isso a task morria direto na DLX.
 TRANSIENT_ERRORS = (
     httpx.HTTPError,
     SAOperationalError,
     ConnectionError,
     TimeoutError,
-    S3Error,
     Urllib3HTTPError,
     # resposta nao-JSON (ex.: pagina HTML de erro com status 200 — pods
     # derrubados no gateway) — transitiva por natureza
@@ -74,7 +72,7 @@ def _on_worker_ready(**_kwargs):
     # migracoes idempotentes tambem no worker: num rebuild ele pode subir antes
     # da API e gravar um valor novo (ex.: SEM_DADOS) que o banco ainda nao tem
     init_db(attempts=10, delay=3)
-    storage.ensure_bucket(attempts=5, delay=3)
+    storage.pronto(attempts=5, delay=3)
     conn = broker._connect()
     try:
         broker.declare_topology(conn.channel())
@@ -418,11 +416,9 @@ def _cabecalho_remoto(url: str) -> tuple[int | None, datetime | None]:
         return None, None
 
 
-def _tamanho_guardado(key: str) -> int | None:
-    try:
-        return storage.client().stat_object(config.MINIO_BUCKET, key.split("/", 1)[1]).size
-    except S3Error:
-        return None
+def _tamanho_guardado(path: str) -> int | None:
+    """Tamanho do arquivo guardado ('raw-docs/<chave>'); None se nao existe."""
+    return storage.tamanho(storage.chave(path))
 
 
 def _ja_guardado(url, documento_id, job_id, sigla, caminho_proprio, tam_anterior, baixado_em) -> bool:
@@ -483,14 +479,13 @@ def _fallback_url(url: str, base_url: str | None) -> str | None:
 
 
 def _baixa_doc_pdf(dataset: str, doc: dict, seen: Optional[dict] = None) -> bool:
-    """Baixa um PDF de anexo do dataset -> local + MinIO.
+    """Baixa um PDF de anexo do dataset para a pasta de arquivos.
     doc: {'url', 'orgao', 'sub', 'nome'}. Pula se o arquivo ja existe ou
     se o conteudo ja foi gravado na mesma pasta (docs duplicados — ex.:
     termo e plano de trabalho apontando pro mesmo binario)."""
     pasta = f"{doc['orgao']}/{dataset}/documentos/{doc.get('sub') or '_avulso'}"
     rel = f"{pasta}/{doc['nome']}"
-    local = os.path.join(config.LOCAL_EXPORT_DIR, rel) if config.LOCAL_EXPORT_DIR else None
-    if local and os.path.exists(local):
+    if storage.existe(rel):
         return False
     with http_client.new_client() as c:
         resp = c.get(doc["url"])
@@ -505,26 +500,8 @@ def _baixa_doc_pdf(dataset: str, doc: dict, seen: Optional[dict] = None) -> bool
         if sha in hashes:
             return False
         hashes.add(sha)
-    minio = storage.ensure_bucket()
-    minio.put_object(
-        config.MINIO_BUCKET, rel, io.BytesIO(body),
-        length=len(body), content_type="application/pdf",
-    )
-    if local:
-        os.makedirs(os.path.dirname(local), exist_ok=True)
-        with open(local, "wb") as f:
-            f.write(body)
+    storage.salvar_bytes(body, rel)
     return True
-
-
-def _export_local(tmp, minio_path: str) -> None:
-    """Espelha o objeto (bucket/path no estilo 'raw-docs/a/b.csv') no host."""
-    dst = os.path.join(config.LOCAL_EXPORT_DIR, minio_path.split("/", 1)[1])
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    tmp.seek(0)
-    with open(dst, "wb") as f:
-        shutil.copyfileobj(tmp, f)
-    log.info("Exportado para %s", dst)
 
 
 def _stream_to_tmp(client: httpx.Client, url: str, tmp, sha) -> tuple[int, bytes, bool]:
@@ -595,17 +572,9 @@ def _sha_e_tamanho(tmp) -> tuple[str, int]:
 
 
 def _publica_arquivo(tmp, path: str, size: int, content_type: str) -> None:
-    """Grava no MinIO (obrigatorio) + downloads/ e Drive (best-effort)."""
-    key = path.split("/", 1)[1]
-    tmp.seek(0)
-    storage.ensure_bucket().put_object(
-        config.MINIO_BUCKET, key, tmp, length=size, content_type=content_type,
-    )
-    if config.LOCAL_EXPORT_DIR:
-        try:
-            _export_local(tmp, path)
-        except OSError:
-            log.exception("Falha ao exportar %s para o host", path)
+    """Grava na pasta de arquivos (unica copia) + Drive, se ligado (best-effort)."""
+    key = storage.chave(path)
+    storage.salvar(tmp, key)
     drive.upload_file(tmp, key, content_type)
 
 
@@ -835,21 +804,7 @@ def download_document(self, payload: dict):
 
         path = caminho_proprio or _minio_path(sigla, url)
 
-        minio = storage.ensure_bucket()
-        minio.put_object(
-            config.MINIO_BUCKET,
-            path.split("/", 1)[1],
-            tmp,
-            length=size,
-            content_type="application/pdf",
-        )
-
-        if config.LOCAL_EXPORT_DIR:
-            try:
-                _export_local(tmp, path)
-            except OSError:
-                log.exception("Falha ao exportar %s para o host", path)
-        drive.upload_file(tmp, path.split("/", 1)[1], "application/pdf")
+        _publica_arquivo(tmp, path, size, "application/pdf")
 
         with SessionLocal() as s:
             try:
@@ -892,13 +847,10 @@ def download_document(self, payload: dict):
                     downloaded_at=datetime.now(timezone.utc),
                 )
                 if path != dupe.minio_path:
-                    try:
-                        minio.remove_object(config.MINIO_BUCKET, path.split("/", 1)[1])
-                    except S3Error:
-                        log.warning("Objeto orfao nao removido: %s", path)
+                    storage.remover(storage.chave(path))  # copia que sobrou da corrida
                 log.info("Upload duplicado descartado — reusa %s", dupe.minio_path)
                 return
-        log.info("Download ok %s (%d bytes) -> s3://%s", url, size, path)
+        log.info("Download ok %s (%d bytes) -> %s", url, size, storage.chave(path))
 
     time.sleep(config.DOWNLOAD_DELAY_SECONDS)
 
@@ -1485,7 +1437,7 @@ def fetch_dataset_mes(self, payload: dict):
                 s.rollback()  # outra unidade gravou o mesmo hash agora ha pouco
                 _fecha_documento(s, documento_id, job_id, hash_sha256=None, **fechar)
         log.info(
-            "%s %s ok: %d registros (%d bytes) -> s3://%s",
+            "%s %s ok: %d registros (%d bytes) -> %s",
             dataset, rotulo, total_rows, size, path,
         )
 
@@ -1622,7 +1574,7 @@ def coletar_fonte(self, payload: dict):
             except IntegrityError:
                 s.rollback()
                 _registra(s, hash_sha256=None, **fechar)
-        log.info("Coleta %s ok: %d registros, %d colunas -> s3://%s", sigla, total, n_colunas, path)
+        log.info("Coleta %s ok: %d registros, %d colunas -> %s", sigla, total, n_colunas, path)
 
 
 def requeue_dead_letters(limit: int = 100) -> int:
