@@ -32,14 +32,46 @@
 
 <main>
   <section class="cards" id="overview-cards">
-    <div class="card"><span class="card-label">Fila Discovery</span><span class="card-value" id="q-discovery">–</span></div>
-    <div class="card"><span class="card-label">Fila Download</span><span class="card-value" id="q-download">–</span></div>
-    <div class="card warn"><span class="card-label">Fila de erros</span><span class="card-value" id="q-dead">–</span><button id="btn-requeue" class="mini" title="Republica as dead letters na fila original">reprocessar</button></div>
-    <div class="card"><span class="card-label">PDFs baixados</span><span class="card-value" id="docs-ok">–</span></div>
-    <div class="card"><span class="card-label">Falhas</span><span class="card-value" id="docs-fail">–</span></div>
-    <div class="card"><span class="card-label">Últimas 24h</span><span class="card-value small" id="docs-24h">–</span></div>
-    <div class="card"><span class="card-label">Tarefas rodando</span><span class="card-value" id="jobs-running">–</span></div>
+    <div class="card card-agora" id="card-agora" title="O que o sistema está baixando neste momento">
+      <span class="card-label">Coleta agora</span>
+      <span class="card-value small" id="agora-titulo">–</span>
+      <span class="card-sub" id="agora-detalhe"></span>
+      <div class="bar" id="agora-barra" hidden><div class="bar-fill" id="agora-barra-fill"></div></div>
+    </div>
+    <div class="card" title="Coletas que você pôs na fila automática (Dados abertos → Pôr na fila). Rodam uma por vez, sozinhas.">
+      <span class="card-label">Fila de coletas</span>
+      <span class="card-value small" id="fila-resumo">–</span>
+      <span class="card-sub" id="fila-detalhe"></span>
+    </div>
+    <div class="card" title="Arquivos (PDF e CSV) guardados no servidor">
+      <span class="card-label">Arquivos guardados</span>
+      <span class="card-value" id="guardado-n">–</span>
+      <span class="card-sub" id="guardado-tam"></span>
+      <a class="mini" id="link-arquivos" href="http://localhost:8001" target="_blank" rel="noopener" title="Abre a página com as pastas e arquivos (precisa do atalho abrir-painel-servidor aberto)">ver arquivos</a>
+    </div>
+    <div class="card" title="Espaço que ainda sobra no disco onde os arquivos ficam">
+      <span class="card-label">Espaço livre</span>
+      <span class="card-value" id="espaco-livre">–</span>
+    </div>
+    <div class="card" title="Arquivos baixados e falhas nas últimas 24 horas — mostra se o sistema está trabalhando">
+      <span class="card-label">Últimas 24h</span>
+      <span class="card-value small" id="docs-24h">–</span>
+    </div>
+    <div class="card warn" title="Partes que não deram certo (link quebrado, arquivo que não é PDF, erro da API). Órgão sem dados no período NÃO conta como falha.">
+      <span class="card-label">Falhas</span>
+      <span class="card-value" id="docs-fail">–</span>
+      <span class="card-sub" id="falhas-detalhe"></span>
+      <button id="btn-requeue" class="mini" title="Tenta de novo as partes que esgotaram as tentativas automáticas">tentar de novo</button>
+    </div>
   </section>
+  <details class="tecnico">
+    <summary>detalhes técnicos</summary>
+    <span title="Páginas e listas a descobrir (sobe por segundos no início de cada coleta)">Fila de descoberta: <b id="q-discovery">–</b></span>
+    <span title="Partes da coleta atual esperando para baixar. Em 0 NÃO quer dizer que acabou: veja 'Coleta agora'.">Fila de download: <b id="q-download">–</b></span>
+    <span title="Partes que esgotaram as 5 tentativas automáticas">Fila de erros: <b id="q-dead">–</b></span>
+    <span>Tarefas rodando: <b id="jobs-running">–</b></span>
+    <span title="Partes em que o órgão não publicou nada no período (normal, não é erro)">Sem dados: <b id="sem-dados">–</b></span>
+  </details>
 
   <section class="panel" id="prog-tarefas" hidden>
     <h2>Progresso das tarefas</h2>

@@ -10,8 +10,11 @@ const $ = (id) => document.getElementById(id);
 const esc = (t) =>
   String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtDate = (s) => (s ? new Date(s).toLocaleString("pt-BR") : "—");
-const fmtBytes = (n) =>
-  n == null ? "—" : n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? (n / 1e3).toFixed(1) + " KB" : n + " B";
+const fmtBytes = (n) => {
+  if (n == null) return "—";
+  const u = [["TB", 1e12], ["GB", 1e9], ["MB", 1e6], ["KB", 1e3]].find(([, v]) => n >= v);
+  return u ? (n / u[1]).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + " " + u[0] : n + " B";
+};
 const ROTULOS = { RUNNING: "Em andamento", COMPLETED: "Concluído", FAILED: "Falhou", CANCELLED: "Cancelado", SUCCESS: "Sucesso", PENDING: "Pendente", SEM_DADOS: "Sem dados" };
 const badge = (st) => `<span class="badge ${esc(st)}">${esc(ROTULOS[st] || st)}</span>`;
 const barra = (pct, feito) =>
@@ -67,19 +70,69 @@ function toast(msg, err = false) {
 
 // ---------- Overview ----------
 
+const num = (n) => (n == null || n < 0 ? "–" : Number(n).toLocaleString("pt-BR"));
+
 async function loadOverview() {
   try {
-    const o = await api("/overview");
+    const r = await api("/resumo");
     $("api-status").textContent = "API conectada";
     $("api-status").className = "pill on";
-    $("q-discovery").textContent = o.queues["q.discovery"] ?? "–";
-    $("q-download").textContent = o.queues["q.download"] ?? "–";
-    $("q-dead").textContent = o.queues["q.dead"] ?? "–";
-    $("docs-ok").textContent = o.documents.SUCCESS ?? 0;
-    $("docs-fail").textContent = o.documents.FAILED ?? 0;
-    $("docs-24h").textContent =
-      `${o.last_24h.documents_ok} ok · ${o.last_24h.documents_failed} falhas`;
-    $("jobs-running").textContent = o.jobs.RUNNING ?? 0;
+
+    // Coleta agora: o que esta rodando e em que ponto
+    const ag = r.agora, f = r.fila;
+    const titulo = $("agora-titulo");
+    titulo.classList.remove("ok");
+    $("agora-barra").hidden = true;
+    if (ag.length) {
+      const a = ag.find((x) => x.nome === f.atual) || ag[0];
+      titulo.textContent = a.nome + (ag.length > 1 ? `  (+${ag.length - 1} tarefa${ag.length > 2 ? "s" : ""})` : "");
+      $("agora-detalhe").textContent = a.total > 1
+        ? `${num(a.feitos)} de ${num(a.total)} partes · ${a.percentual ?? 0}%`
+        : "em andamento — parte única grande (pode levar um tempo sem a barra andar)";
+      if (a.total > 1) {
+        $("agora-barra").hidden = false;
+        $("agora-barra-fill").style.width = (a.percentual ?? 0) + "%";
+      }
+    } else if (f.aguardando) {
+      titulo.textContent = "Iniciando a próxima coleta da fila…";
+      $("agora-detalhe").textContent = "começa em até 1 minuto";
+    } else {
+      titulo.textContent = "✅ Nada rodando — tudo concluído";
+      titulo.classList.add("ok");
+      $("agora-detalhe").textContent = "pode pedir uma nova coleta";
+    }
+
+    // Fila de coletas
+    if (!f.total) {
+      $("fila-resumo").textContent = "vazia";
+      $("fila-detalhe").textContent = "use “Pôr na fila” em Dados abertos";
+    } else if (f.posicao_atual) {
+      $("fila-resumo").textContent = `${f.posicao_atual}ª de ${f.total}`;
+      $("fila-detalhe").textContent = `${f.terminadas} concluída(s) · ${f.aguardando} esperando` + (f.falharam ? ` · ${f.falharam} com falha` : "");
+    } else {
+      $("fila-resumo").textContent = f.aguardando ? `${f.aguardando} esperando` : `${f.terminadas} de ${f.total} ✓`;
+      $("fila-detalhe").textContent = f.aguardando ? "" : "fila terminada" + (f.falharam ? ` · ${f.falharam} com falha` : "");
+    }
+
+    // Arquivos guardados e espaco
+    const g = r.guardado;
+    $("guardado-n").textContent = num(g.arquivos);
+    $("guardado-tam").textContent = g.bytes == null ? "" : fmtBytes(g.bytes);
+    $("espaco-livre").textContent = g.livre_bytes == null ? "–" : fmtBytes(g.livre_bytes);
+
+    $("docs-24h").textContent = `${num(r.ultimas_24h.baixados)} baixados · ${num(r.ultimas_24h.falhas)} falhas`;
+    $("docs-fail").textContent = num(r.falhas.total);
+    const naFila = r.falhas.na_fila_de_erros;
+    $("falhas-detalhe").textContent = naFila > 0 ? `${num(naFila)} esperando nova tentativa` : "";
+    $("btn-requeue").hidden = !(naFila > 0);
+
+    // detalhes tecnicos
+    const t = r.tecnico;
+    $("q-discovery").textContent = num(t.fila_descoberta);
+    $("q-download").textContent = num(t.fila_download);
+    $("q-dead").textContent = num(t.fila_erros);
+    $("jobs-running").textContent = num(t.tarefas_rodando);
+    $("sem-dados").textContent = num(r.sem_dados);
   } catch (e) {
     $("api-status").textContent = "API desconectada";
     $("api-status").className = "pill off";
@@ -90,7 +143,7 @@ $("btn-requeue").addEventListener("click", async () => {
   $("btn-requeue").disabled = true;
   try {
     const r = await api("/dead-letters/requeue", { method: "POST" });
-    toast(`${r.requeued} dead letter(s) reprocessada(s)`);
+    toast(r.requeued ? `${r.requeued} parte(s) enviada(s) para nova tentativa` : "Nada esperando nova tentativa");
     loadOverview();
   } catch (err) {
     toast(err.message, true);
