@@ -115,17 +115,39 @@ def finish_task_unit(session, job_id: uuid.UUID | None) -> None:
     session.commit()
 
 
+def _conclui_se_drenou(session, *job_ids) -> None:
+    """Tarefas 'refazer' terminam quando nao resta documento PENDING delas. O
+    contador nao basta: um documento pode ser fechado por uma tentativa ANTIGA
+    (de outra tarefa) ainda na fila, e a tarefa nova ficaria 'em andamento' a 100%."""
+    for jid in {j for j in job_ids if j}:
+        jid = jid if isinstance(jid, uuid.UUID) else uuid.UUID(str(jid))
+        resta = session.execute(
+            select(Documento.id).where(
+                Documento.job_id == jid, Documento.status_download == DownloadStatus.PENDING
+            ).limit(1)
+        ).first()
+        if resta is None:
+            session.execute(
+                update(ScrapingJob)
+                .where(ScrapingJob.id == jid, ScrapingJob.status == JobStatus.RUNNING,
+                       ScrapingJob.tipo == "refazer")
+                .values(status=JobStatus.COMPLETED, completed_at=datetime.now(timezone.utc))
+            )
+    session.commit()
+
+
 def _fecha_documento(session, documento_id: uuid.UUID, job_id: uuid.UUID | None, **values) -> None:
     """Grava o resultado final do documento e desconta a pendencia do job SO se
     ele ainda estava PENDING. Idempotente: reentrega da mensagem, reprocesso da
     fila de erros ou o reconciliador nao descontam o mesmo item duas vezes (antes
     o contador ficava negativo e o job aparecia concluido com trabalho rodando).
     O resultado e gravado mesmo se o reconciliador ja tinha marcado FAILED."""
-    anterior = session.execute(
-        select(Documento.status_download)
+    linha = session.execute(
+        select(Documento.status_download, Documento.job_id)
         .where(Documento.id == documento_id)
         .with_for_update()
-    ).scalar_one_or_none()
+    ).first()
+    anterior, job_do_doc = (linha[0], linha[1]) if linha else (None, None)
     if values.get("status_download") in (DownloadStatus.SUCCESS, DownloadStatus.SEM_DADOS):
         values.setdefault("erro", None)  # deu certo: apaga o motivo de uma falha antiga
     session.execute(update(Documento).where(Documento.id == documento_id).values(**values))
@@ -133,6 +155,7 @@ def _fecha_documento(session, documento_id: uuid.UUID, job_id: uuid.UUID | None,
         finish_task_unit(session, job_id)  # faz o commit
     else:
         session.commit()
+    _conclui_se_drenou(session, job_id, job_do_doc)
 
 
 def _job_cancelado(job_id: uuid.UUID) -> bool:
@@ -739,6 +762,7 @@ def download_document(self, payload: dict):
         if doc.status_download == DownloadStatus.SUCCESS:
             # reentrega de uma task que ja concluiu: a pendencia ja foi descontada
             log.info("Documento ja baixado: %s", url)
+            _conclui_se_drenou(s, job_id)
             return
         sec = s.get(Secretaria, doc.secretaria_id)
         base_url = sec.url_base if sec else None
@@ -1139,6 +1163,12 @@ def reconcile_stalled():
         ).rowcount
         s.commit()
 
+    with SessionLocal() as s:
+        presas = s.execute(
+            select(ScrapingJob.id).where(ScrapingJob.status == JobStatus.RUNNING, ScrapingJob.tipo == "refazer")
+        ).scalars().all()
+        _conclui_se_drenou(s, *presas)
+
     if orphans or stalled:
         log.warning(
             "Reconcile: %d documentos orfaos -> FAILED, %d jobs zumbis -> FAILED",
@@ -1397,6 +1427,7 @@ def fetch_dataset_mes(self, payload: dict):
             finish_task_unit(s, job_id)
             return
         if doc.status_download == DownloadStatus.SUCCESS:
+            _conclui_se_drenou(s, job_id)
             return  # reentrega de task ja concluida: pendencia ja descontada
         hash_anterior, caminho_anterior = doc.hash_sha256, doc.minio_path
 
@@ -1772,3 +1803,36 @@ def descartar_falhas(session, fonte=None, motivo=None, so_permanentes=False) -> 
         doc.status_download = DownloadStatus.DESCARTADO
     session.commit()
     return len(selecionadas)
+
+
+def descartar_paginas_fila_erros(limit: int = 100000) -> int:
+    """Tira da fila de erros as PAGINAS de portal que esgotaram as tentativas (sites
+    que nao respondem). Mensagens de documento ficam (sao tratadas por refazer_falhas)."""
+    try:
+        conn = broker._connect()
+    except (pika.exceptions.AMQPError, OSError):
+        log.exception("RabbitMQ indisponivel para limpar a fila de erros")
+        return 0
+    descartadas, manter = 0, []
+    try:
+        ch = conn.channel()
+        for _ in range(limit):
+            method, _props, body = ch.basic_get(queue=config.Q_DEAD, auto_ack=False)
+            if method is None:
+                break
+            try:
+                msg = json.loads(body)
+                inner = msg.get("payload") if isinstance(msg, dict) else None
+                payload = inner.get("payload") if isinstance(inner, dict) else None
+            except (json.JSONDecodeError, AttributeError):
+                payload = None
+            if isinstance(payload, dict) and payload.get("documento_id"):
+                manter.append(method.delivery_tag)
+            else:
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                descartadas += 1
+        for tag in manter:
+            ch.basic_nack(delivery_tag=tag, requeue=True)
+    finally:
+        conn.close()
+    return descartadas

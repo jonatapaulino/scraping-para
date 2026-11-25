@@ -38,7 +38,8 @@ from app.schemas import (
     SecretariaUpdate,
 )
 from app.tasks import (
-    ERROS_PERMANENTES, avancar_fila, descartar_falhas, fonte_do_documento, refazer_falhas,
+    ERROS_PERMANENTES, avancar_fila, descartar_falhas, descartar_paginas_fila_erros,
+    fonte_do_documento, refazer_falhas,
     requeue_dead_letters, start_coleta_job, start_dataset_job, start_job_for_secretaria,
 )
 
@@ -569,7 +570,10 @@ def listar_falhas(s: Session = Depends(get_session)):
             g["exemplos"].append({"url": url, "quando": quando.isoformat() if quando else None})
     lista = sorted(grupos.values(), key=lambda g: (-g["quantidade"], g["fonte_nome"]))
     permanentes = sum(g["quantidade"] for g in lista if g["permanente"])
+    from app import broker
     return {
+        # paginas de portal (e outras tarefas) que esgotaram as tentativas
+        "fila_erros": _cache_curto("filas", 10, broker.queue_depths).get(config.Q_DEAD, -1),
         "total": len(rows),
         "permanentes": permanentes,
         "refaziveis": len(rows) - permanentes,
@@ -600,6 +604,13 @@ def descartar(req: FalhasAcao, s: Session = Depends(get_session)):
     """Tira falhas da lista (nao contam mais e nao sao refeitas)."""
     n = descartar_falhas(s, req.fonte, req.motivo, req.so_permanentes)
     return {"descartadas": n}
+
+
+@router.post("/falhas/descartar-paginas")
+def descartar_paginas():
+    """Tira da fila de erros as paginas de portal que nao responderam."""
+    _CACHE_CURTO.pop("filas", None)
+    return {"descartadas": descartar_paginas_fila_erros()}
 
 
 def _ultima_versao() -> dict:
