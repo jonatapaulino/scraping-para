@@ -88,11 +88,8 @@ def health():
         deps["rabbitmq"] = "ok"
     except Exception:
         deps["rabbitmq"] = "down"
-    try:
-        storage.client().bucket_exists(config.MINIO_BUCKET)
-        deps["minio"] = "ok"
-    except Exception:
-        deps["minio"] = "down"
+    # pasta de downloads (unica copia dos arquivos) montada e com escrita
+    deps["arquivos"] = "ok" if storage.pronto() else "down"
     healthy = all(v == "ok" for v in deps.values())
     return JSONResponse(
         {"status": "ok" if healthy else "degraded", "deps": deps},
