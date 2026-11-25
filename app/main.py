@@ -68,7 +68,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Scraper Gov-PA", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Scraper Gov-PA", version=config.APP_VERSION, lifespan=lifespan)
 app.include_router(router)
 add_pagination(app)
 
@@ -92,7 +92,7 @@ def health():
     deps["arquivos"] = "ok" if storage.pronto() else "down"
     healthy = all(v == "ok" for v in deps.values())
     return JSONResponse(
-        {"status": "ok" if healthy else "degraded", "deps": deps},
+        {"status": "ok" if healthy else "degraded", "versao": config.APP_VERSION, "deps": deps},
         status_code=200 if healthy else 503,
     )
 

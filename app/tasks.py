@@ -6,7 +6,6 @@ import logging
 import os
 from typing import Optional
 import re
-import shutil
 import tempfile
 import time
 import uuid

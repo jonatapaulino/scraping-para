@@ -1,0 +1,65 @@
+{
+  "branches": ["main"],
+  "tagFormat": "v${version}",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "releaseRules": [
+          { "breaking": true, "release": "major" },
+          { "type": "feat", "release": "minor" },
+          { "type": "fix", "release": "patch" },
+          { "type": "perf", "release": "patch" },
+          { "type": "refactor", "release": "patch" },
+          { "type": "revert", "release": "patch" },
+          { "type": "build", "scope": "deps", "release": "patch" },
+          { "type": "docs", "release": false },
+          { "type": "test", "release": false },
+          { "type": "ci", "release": false },
+          { "type": "build", "release": false },
+          { "type": "chore", "release": false },
+          { "type": "style", "release": false }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "presetConfig": {
+          "types": [
+            { "type": "feat", "section": "✨ Novidades" },
+            { "type": "fix", "section": "🐛 Correções" },
+            { "type": "perf", "section": "⚡ Desempenho" },
+            { "type": "refactor", "section": "♻️ Melhorias internas" },
+            { "type": "revert", "section": "⏪ Reversões" },
+            { "type": "docs", "section": "📝 Documentação" },
+            { "type": "build", "section": "📦 Build e dependências" },
+            { "type": "ci", "hidden": true },
+            { "type": "test", "hidden": true },
+            { "type": "chore", "hidden": true },
+            { "type": "style", "hidden": true }
+          ]
+        },
+        "writerOpts": {
+          "footerPartial": "\n---\n**Instalar esta versão no servidor:** `./deploy/atualizar.sh {{version}}`\n\nImagem: `ghcr.io/jonatapaulino/scraping-para:{{version}}`\n"
+        }
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "publishCmd": "echo \"versao=${nextRelease.version}\" >> \"$GITHUB_OUTPUT\""
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "successComment": false,
+        "failComment": false,
+        "releasedLabels": false
+      }
+    ]
+  ]
+}

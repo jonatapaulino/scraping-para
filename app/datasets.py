@@ -10,13 +10,12 @@ Cada dataset expoe: list_periods(), list_orgaos(ano, mes), iter_rows(recorte, si
 Sigla e a chave de filtro de orgao — onde a API nao tem sigla no row,
 filtramos pelo nome completo do orgao."""
 
-import json
 import logging
 import re
 import time
 from datetime import datetime
 from typing import Iterator, Optional
-from urllib.parse import quote, unquote
+from urllib.parse import unquote
 
 from app import config, http_client
 from app.folha import _cached

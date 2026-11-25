@@ -1,5 +1,8 @@
 import os
 
+# Versao do sistema: vem da imagem publicada pelo CI (tag vX.Y.Z); 'dev' fora dela
+APP_VERSION = os.getenv("APP_VERSION", "dev")
+
 
 def _int(name: str, default: int) -> int:
     try:

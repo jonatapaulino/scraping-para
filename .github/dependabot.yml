@@ -1,0 +1,21 @@
+# Atualizacoes automaticas (abre PR, nunca aplica sozinho): as actions do CI,
+# as bibliotecas Python e a imagem base do Docker. Cada PR passa pelo CI.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    commit-message: { prefix: "ci" }
+    groups:
+      actions: { patterns: ["*"] }
+
+  - package-ecosystem: pip
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    commit-message: { prefix: "build", include: scope }
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    commit-message: { prefix: "build", include: scope }

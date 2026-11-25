@@ -75,6 +75,7 @@ const num = (n) => (n == null || n < 0 ? "–" : Number(n).toLocaleString("pt-BR
 async function loadOverview() {
   try {
     const r = await api("/resumo");
+    $("versao").textContent = r.versao && r.versao !== "dev" ? "v" + r.versao : "versão local";
     $("api-status").textContent = "API conectada";
     $("api-status").className = "pill on";
 

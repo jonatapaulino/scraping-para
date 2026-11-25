@@ -1,0 +1,230 @@
+# CI/CD do Scraper Gov-PA
+#
+#  Pull request  -> qualidade + mensagens de commit + testes + montagem da imagem (sem publicar)
+#  Merge na main -> qualidade + testes -> semantic-release (versao pelos commits, tag vX.Y.Z,
+#                   Release com notas) -> imagem publicada em ghcr.io com a versao
+#  Tag vX.Y.Z    -> (feita a mao, ex.: a primeira) publica a imagem daquela versao
+#
+# Nada aqui acessa o servidor: quem atualiza la escolhe a versao (deploy/atualizar.sh).
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # PR: uma execucao nova cancela a antiga; main/tags: nunca interrompe uma release
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGEM: ghcr.io/${{ github.repository }}
+
+jobs:
+  qualidade:
+    name: Qualidade (lint, sintaxe, compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: "Ruff: erros reais (nomes indefinidos, imports sem uso, sintaxe)"
+        run: |
+          pip install ruff==0.8.4
+          ruff check --output-format github app tests ferramentas
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Sintaxe do painel (JavaScript)
+        run: node --check app/static/app.js
+      - name: docker-compose.yml valido
+        run: |
+          cp .env.example .env
+          docker compose config -q
+      - name: Scripts .bat com CRLF
+        run: |
+          for f in $(git ls-files '*.bat'); do
+            if git ls-files --eol "$f" | grep -q 'w/lf'; then echo "::error file=$f::sem CRLF"; exit 1; fi
+          done
+
+  commits:
+    name: Mensagens de commit (Conventional Commits)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: commitlint.config.cjs
+
+  testes:
+    name: Testes (Postgres real)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: scraper
+          POSTGRES_PASSWORD: scraper
+          POSTGRES_DB: scraper
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U scraper"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Suites (cada uma com banco e pasta proprios)
+        env:
+          POSTGRES_HOST: localhost
+        run: python tests/rodar.py
+
+  imagem-pr:
+    name: Imagem Docker (monta, nao publica)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          build-args: |
+            APP_VERSION=pr-${{ github.event.number }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Versao e Release (semantic-release)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [qualidade, testes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write        # criar tag e Release
+      issues: write
+      pull-requests: write
+    outputs:
+      versao: ${{ steps.sr.outputs.versao }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # historico completo: a versao sai dos commits desde a ultima tag
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: semantic-release
+        id: sr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          npx --yes
+          -p semantic-release@24
+          -p @semantic-release/exec@6
+          -p conventional-changelog-conventionalcommits@8
+          semantic-release
+      - name: Resumo
+        run: |
+          if [ -n "${{ steps.sr.outputs.versao }}" ]; then
+            echo "### Nova versao: v${{ steps.sr.outputs.versao }}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Sem versao nova (nenhum feat/fix/perf/refactor desde a ultima tag)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  publicar:
+    name: Publicar imagem (ghcr.io)
+    needs: [qualidade, testes, release]
+    # depois de uma release nova na main, ou ao empurrar uma tag vX.Y.Z feita a mao
+    if: >
+      always() && needs.qualidade.result == 'success' && needs.testes.result == 'success' &&
+      ((github.ref == 'refs/heads/main' && needs.release.outputs.versao != '') ||
+       startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write          # publicar no GitHub Container Registry
+      id-token: write          # atestado de procedencia (provenance)
+      attestations: write
+    steps:
+      - name: Versao
+        id: v
+        run: |
+          if [ -n "${{ needs.release.outputs.versao }}" ]; then V="${{ needs.release.outputs.versao }}"
+          else V="${GITHUB_REF_NAME#v}"; fi
+          echo "versao=$V" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ steps.v.outputs.versao }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGEM }}
+          tags: |
+            type=semver,pattern={{version}},value=v${{ steps.v.outputs.versao }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.v.outputs.versao }}
+            type=semver,pattern={{major}},value=v${{ steps.v.outputs.versao }}
+            type=raw,value=latest
+            type=sha,format=short
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.v.outputs.versao }}
+            VCS_REF=${{ github.sha }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.IMAGEM }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Varredura de vulnerabilidades (informativa)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGEM }}:${{ steps.v.outputs.versao }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+          format: table
+      - name: Resumo
+        run: |
+          {
+            echo "### Imagem publicada"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo "Instalar no servidor: \`./deploy/atualizar.sh ${{ steps.v.outputs.versao }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

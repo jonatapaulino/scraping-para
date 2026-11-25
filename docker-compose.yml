@@ -1,3 +1,7 @@
+# Imagem do sistema: publicada pelo CI a cada versao (ghcr.io/jonatapaulino/scraping-para).
+# SCRAPER_VERSAO no .env escolhe a versao (ex.: 1.2.0); sem ela, 'latest'.
+#   atualizar sem montar:  docker compose pull && docker compose up -d --no-build
+#   montar localmente:     docker compose up -d --build
 # Arquivos baixados: UMA copia, so na pasta DOWNLOADS_DIR (padrao ./downloads).
 # Para usar outro disco (ex.: HD externo E:), no .env: DOWNLOADS_DIR=E:/scraper-downloads
 services:
@@ -50,8 +54,18 @@ services:
 
   api:
     restart: unless-stopped
-    build: .
+    image: ghcr.io/jonatapaulino/scraping-para:${SCRAPER_VERSAO:-latest}
+    build:
+      context: .
+      args:
+        APP_VERSION: ${SCRAPER_VERSAO:-dev}
     command: python -m app.main
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 6s
+      start_period: 40s
+      retries: 3
     env_file: .env
     volumes:
       - ${DOWNLOADS_DIR:-./downloads}:/downloads
@@ -64,7 +78,7 @@ services:
         condition: service_healthy
 
   worker-discovery:
-    build: .
+    image: ghcr.io/jonatapaulino/scraping-para:${SCRAPER_VERSAO:-latest}
     restart: unless-stopped
     command: celery -A app.celery_app worker -Q q.discovery -c 2 -n discovery@%h --loglevel=INFO --max-tasks-per-child=200
     env_file: .env
@@ -81,7 +95,7 @@ services:
         condition: service_started
 
   worker-download:
-    build: .
+    image: ghcr.io/jonatapaulino/scraping-para:${SCRAPER_VERSAO:-latest}
     restart: unless-stopped
     command: celery -A app.celery_app worker -Q q.download -c 4 -n download@%h --loglevel=INFO --max-tasks-per-child=200
     env_file: .env
@@ -99,7 +113,7 @@ services:
   worker-control:
     # agenda diaria, reconciliador e disparos do Beat: fila propria (q.control)
     # para nao esperar atras do crawl; 1 processo = agendas nunca em paralelo
-    build: .
+    image: ghcr.io/jonatapaulino/scraping-para:${SCRAPER_VERSAO:-latest}
     restart: unless-stopped
     command: celery -A app.celery_app worker -Q q.control -c 1 -n control@%h --loglevel=INFO --max-tasks-per-child=200
     env_file: .env
@@ -113,7 +127,7 @@ services:
 
   beat:
     restart: unless-stopped
-    build: .
+    image: ghcr.io/jonatapaulino/scraping-para:${SCRAPER_VERSAO:-latest}
     command: celery -A app.celery_app beat --loglevel=INFO
     env_file: .env
     depends_on:
@@ -124,7 +138,7 @@ services:
 
   flower:
     restart: unless-stopped
-    build: .
+    image: ghcr.io/jonatapaulino/scraping-para:${SCRAPER_VERSAO:-latest}
     command: celery -A app.celery_app flower --port=5555 --loglevel=INFO
     env_file: .env
     ports:
