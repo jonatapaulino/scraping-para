@@ -1,0 +1,3 @@
+# Scripts do Windows precisam de CRLF: com LF o cmd.exe falha (o atalho do painel fechava na hora)
+*.bat text eol=crlf
+*.cmd text eol=crlf
