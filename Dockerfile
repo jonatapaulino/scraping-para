@@ -9,6 +9,11 @@ ENV PYTHONUNBUFFERED=1     PYTHONDONTWRITEBYTECODE=1     PIP_NO_CACHE_DIR=1     
 
 WORKDIR /srv
 
+# rclone (envio ao Google Drive pelo painel): versao fixa, arquivo conferido
+# contra o SHA256SUMS oficial (releases do rclone no GitHub) antes de instalar
+ARG RCLONE_VERSION=1.68.2
+RUN python -c "import hashlib,io,os,urllib.request,zipfile; v=os.environ['RCLONE_VERSION']; base=f'https://github.com/rclone/rclone/releases/download/v{v}/'; nome=f'rclone-v{v}-linux-amd64'; dados=urllib.request.urlopen(base+nome+'.zip', timeout=180).read(); somas=urllib.request.urlopen(base+'SHA256SUMS', timeout=60).read().decode(); assert hashlib.sha256(dados).hexdigest()+'  '+nome+'.zip' in somas, 'checksum do rclone nao confere'; open('/usr/local/bin/rclone','wb').write(zipfile.ZipFile(io.BytesIO(dados)).read(nome+'/rclone')); os.chmod('/usr/local/bin/rclone', 0o755)"  && rclone version | head -1
+
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 

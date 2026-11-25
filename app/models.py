@@ -74,6 +74,9 @@ class ScrapingJob(Base):
     # 'crawl' = raspagem de paginas; 'folha' = coleta na API da transparencia
     tipo: Mapped[str] = mapped_column(String(32), default="crawl")
     total_pdfs_encontrados: Mapped[int] = mapped_column(Integer, default=0)
+    # tarefas que nao sao feitas de documentos (ex.: envio ao Google Drive):
+    # andamento em JSON ({"feitos", "total", "bytes", ...}) para o painel
+    progresso_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

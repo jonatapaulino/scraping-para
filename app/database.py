@@ -24,7 +24,7 @@ _ADDITIVE_COLUMNS = {
         ("agenda_hora", "VARCHAR(5) DEFAULT '06:00'"),
         ("agendada_em", "TIMESTAMP WITH TIME ZONE"),
     ],
-    "scraping_job": [("tipo", "VARCHAR(32) DEFAULT 'crawl'")],
+    "scraping_job": [("tipo", "VARCHAR(32) DEFAULT 'crawl'"), ("progresso_json", "TEXT")],
     "documento": [("downloaded_at", "TIMESTAMP WITH TIME ZONE"), ("erro", "TEXT")],
 }
 

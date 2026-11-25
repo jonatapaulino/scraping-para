@@ -44,6 +44,7 @@ celery.conf.update(
         "app.tasks.discover_dataset": {"queue": config.Q_DISCOVERY},
         "app.tasks.fetch_dataset_mes": {"queue": config.Q_DOWNLOAD},
         "app.tasks.coletar_fonte": {"queue": config.Q_DOWNLOAD},
+        "app.tasks.enviar_drive": {"queue": config.Q_DOWNLOAD},
         # controle (worker-control, 1 processo: as agendas nunca rodam em paralelo
         # e nao disparam a mesma fonte duas vezes)
         "app.tasks.dispatch_scheduled": {"queue": config.Q_CONTROL},

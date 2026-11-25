@@ -64,6 +64,14 @@ Em vez de **Coletar**, clique em **➕ Pôr na fila (uma por vez)**. A coleta en
 
 Órgão que não publicou nada no período aparece como **Sem dados** (cinza) — não é erro e não entra na contagem de *Falhas*.
 
+## Enviar os arquivos para o Google Drive
+Seção **☁ Enviar para o Google Drive**, no painel:
+1. **Uma vez:** abra *Conectar conta Google* e siga os 4 passos (baixar o rclone no computador, rodar `.clone.exe authorize "drive"`, entrar com a conta, colar o código). O espaço usado é o **da conta conectada**.
+2. Cole o **link da pasta** do Drive (pode ser uma pasta diferente a cada envio), escolha *todos os arquivos* ou *só a pasta* de um órgão e clique em **☁ Enviar para o Drive**.
+3. O andamento aparece em **Coleta agora**. Roda no servidor, então dá para fechar o painel. Repetir o envio manda **só o que ainda não está lá**.
+
+Se aparecer "a autorização do Google expirou", conecte a conta de novo (passo 1).
+
 ## A tabela Secretarias
 | Coluna | O que é |
 |---|---|

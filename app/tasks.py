@@ -1836,3 +1836,137 @@ def descartar_paginas_fila_erros(limit: int = 100000) -> int:
     finally:
         conn.close()
     return descartadas
+
+
+# ---------- envio ao Google Drive (rclone) ----------
+
+_ID_PASTA = r"[A-Za-z0-9_-]{10,}"
+
+
+def pasta_drive_do_link(link: str) -> str | None:
+    """ID da pasta a partir do link do Drive (ou do proprio ID colado)."""
+    s = (link or "").strip()
+    m = re.search(rf"/folders/({_ID_PASTA})", s) or re.search(rf"[?&]id=({_ID_PASTA})", s)
+    if m:
+        return m.group(1)
+    return s if re.fullmatch(_ID_PASTA, s) else None
+
+
+def drive_conectado() -> bool:
+    try:
+        with open(config.RCLONE_CONFIG, encoding="utf-8") as f:
+            return "[gdrive]" in f.read()
+    except OSError:
+        return False
+
+
+def salvar_conexao_drive(token: str) -> None:
+    """Grava a autorizacao da conta Google (o codigo do 'rclone authorize drive')."""
+    t = (token or "").strip()
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j < i:
+        raise ValueError("Código inválido: cole o texto que começa com {\"access_token\"")
+    dados = json.loads(t[i:j + 1])
+    if not dados.get("refresh_token"):
+        raise ValueError("Código incompleto: falta o refresh_token (copie o texto inteiro)")
+    os.makedirs(os.path.dirname(config.RCLONE_CONFIG), mode=0o700, exist_ok=True)
+    conteudo = f"[gdrive]\ntype = drive\nscope = drive\ntoken = {json.dumps(dados, separators=(',', ':'))}\n"
+    fd = os.open(config.RCLONE_CONFIG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(conteudo)
+
+
+def desconectar_drive() -> None:
+    try:
+        os.remove(config.RCLONE_CONFIG)
+    except OSError:
+        pass
+
+
+def _grava_progresso(job_id, **dados) -> None:
+    with SessionLocal() as s:
+        s.execute(update(ScrapingJob).where(ScrapingJob.id == job_id)
+                  .values(progresso_json=json.dumps(dados, ensure_ascii=False)))
+        s.commit()
+
+
+def start_envio_drive(session, pasta_id: str, subpasta: str = "") -> ScrapingJob:
+    sec = get_or_create_transparencia(session)
+    job = ScrapingJob(secretaria_id=sec.id, status=JobStatus.RUNNING, tipo="drive",
+                      progresso_json=json.dumps({"fase": "preparando", "subpasta": subpasta}))
+    session.add(job)
+    session.flush()
+    session.add(JobPending(job_id=job.id, pending=1))
+    session.commit()
+    enviar_drive.apply_async(args=[{"job_id": str(job.id), "pasta_id": pasta_id, "subpasta": subpasta}])
+    return job
+
+
+@celery.task(bind=True)
+def enviar_drive(self, payload: dict):
+    """Copia a pasta de arquivos (ou uma subpasta) para a pasta do Drive. So envia
+    o que ainda nao esta la; andamento lido das estatisticas do rclone."""
+    import subprocess
+
+    job_id = uuid.UUID(payload["job_id"])
+    sub = (payload.get("subpasta") or "").strip("/")
+    if _job_cancelado(job_id):
+        return
+    origem = storage.caminho(sub) if sub else storage.raiz()
+    cmd = [
+        config.RCLONE_BIN, "copy", str(origem), f"gdrive:{sub}" if sub else "gdrive:",
+        "--config", config.RCLONE_CONFIG, "--drive-root-folder-id", payload["pasta_id"],
+        "--exclude", ".*", "--exclude", ".*/**", "--exclude", "_manutencao/**",
+        "--transfers", "8", "--checkers", "16", "--retries", "5",
+        "--use-json-log", "--log-level", "NOTICE", "--stats", "15s", "--stats-log-level", "NOTICE",
+    ]
+    prog = {"fase": "verificando", "subpasta": sub, "feitos": 0, "total": 0,
+            "verificados": 0, "bytes": 0, "total_bytes": 0, "erros": 0}
+    _grava_progresso(job_id, **prog)
+    ultimo_erro, cancelado = None, False
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                text=True, encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _encerra_drive(job_id, False, {**prog, "fase": "falhou", "erro": f"rclone não encontrado: {exc}"})
+        return
+    for linha in proc.stderr:
+        try:
+            ev = json.loads(linha)
+        except json.JSONDecodeError:
+            continue
+        st = ev.get("stats")
+        if isinstance(st, dict):
+            prog.update(
+                fase="enviando" if st.get("totalTransfers") else "verificando",
+                feitos=st.get("transfers", 0), total=st.get("totalTransfers", 0),
+                verificados=st.get("checks", 0), bytes=st.get("bytes", 0),
+                total_bytes=st.get("totalBytes", 0), erros=st.get("errors", 0),
+            )
+            _grava_progresso(job_id, **prog)
+            if _job_cancelado(job_id):
+                cancelado = True
+                proc.terminate()
+        elif ev.get("level") in ("error", "critical"):
+            ultimo_erro = str(ev.get("msg", ""))[:300]
+    rc = proc.wait()
+    if cancelado:
+        return
+    ok = rc == 0
+    if not ok:
+        prog["erro"] = ultimo_erro or f"o rclone terminou com código {rc}"
+        if "invalid_grant" in (ultimo_erro or "") or "token" in (ultimo_erro or "").lower():
+            prog["erro"] = "A autorização do Google expirou ou foi revogada: conecte a conta de novo."
+    _encerra_drive(job_id, ok, {**prog, "fase": "concluido" if ok else "falhou"})
+
+
+def _encerra_drive(job_id, ok: bool, prog: dict) -> None:
+    _grava_progresso(job_id, **prog)
+    with SessionLocal() as s:
+        if ok:
+            finish_task_unit(s, job_id)
+        else:
+            s.execute(update(ScrapingJob).where(ScrapingJob.id == job_id, ScrapingJob.status == JobStatus.RUNNING)
+                      .values(status=JobStatus.FAILED, completed_at=datetime.now(timezone.utc)))
+            s.execute(update(JobPending).where(JobPending.job_id == job_id).values(pending=0))
+            s.commit()
