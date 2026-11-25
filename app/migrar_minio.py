@@ -46,10 +46,52 @@ def _baixa(mc, key: str, destino_key: str) -> None:
         obj.release_conn()
 
 
+def _tar_para_stdout() -> int:
+    """--tar: em vez de copiar para a pasta local, escreve na saida padrao um
+    .tar com os objetos que FALTAM na pasta (e a versao do MinIO dos que tem
+    tamanho diferente, como <nome>.minio<ext>). Serve para levar direto a outro
+    computador sem ocupar o disco daqui:
+      python -m app.migrar_minio --tar | ssh servidor "tar -xf - -C destino"
+    """
+    import tarfile
+
+    mc = _cliente()
+    n = total = 0
+    with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as tar:
+        for obj in mc.list_objects(config.MINIO_BUCKET, recursive=True):
+            key = obj.object_name
+            local = storage.tamanho(key)
+            if local == obj.size:
+                continue
+            nome = key
+            if local is not None:
+                base, ext = os.path.splitext(key)
+                nome = f"{base}.minio{ext}"
+            info = tarfile.TarInfo(nome)
+            info.size = obj.size
+            info.mtime = int(obj.last_modified.timestamp()) if obj.last_modified else 0
+            resp = mc.get_object(config.MINIO_BUCKET, key)
+            try:
+                tar.addfile(info, resp)
+            finally:
+                resp.close()
+                resp.release_conn()
+            n += 1
+            total += obj.size
+            if n % 200 == 0:
+                print(f"  ... {n} arquivos, {total / 1e9:.1f} GB", file=sys.stderr, flush=True)
+    print(f"tar: {n} arquivos, {total / 1e9:.2f} GB", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--aplicar", action="store_true")
-    aplicar = ap.parse_args().aplicar
+    ap.add_argument("--tar", action="store_true", help="manda o que falta como .tar na saida padrao")
+    args = ap.parse_args()
+    if args.tar:
+        return _tar_para_stdout()
+    aplicar = args.aplicar
     if not storage.pronto():
         print(f"ERRO: pasta de arquivos {storage.raiz()} indisponivel ou sem escrita")
         return 2
