@@ -39,6 +39,7 @@ from app.schemas import (
 )
 from app.tasks import (
     ERROS_PERMANENTES, avancar_fila, descartar_falhas, descartar_paginas_fila_erros,
+    desconectar_drive, drive_conectado, pasta_drive_do_link, salvar_conexao_drive, start_envio_drive,
     fonte_do_documento, refazer_falhas,
     requeue_dead_letters, start_coleta_job, start_dataset_job, start_job_for_secretaria,
 )
@@ -284,6 +285,33 @@ def overview(s: Session = Depends(get_session)):
     )
 
 
+def _tam(n) -> str:
+    n = float(n or 0)
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or u == "TB":
+            return f"{n:.0f} {u}" if u == "B" else f"{n:.1f} {u}".replace(".", ",")
+        n /= 1024
+    return ""
+
+
+def _progresso_drive(job: ScrapingJob) -> dict:
+    p = json.loads(job.progresso_json or "{}")
+    feitos, total, vist = p.get("feitos") or 0, p.get("total") or 0, p.get("verificados") or 0
+    fase = p.get("fase")
+    if fase == "falhou":
+        texto = "falhou: " + (p.get("erro") or "erro desconhecido")
+    elif fase == "concluido":
+        texto = f"{feitos} arquivo(s) novo(s) enviado(s) ({_tam(p.get('bytes'))}) · {vist} já estavam no Drive"
+    elif fase == "enviando":
+        texto = f"{feitos} de {total} arquivo(s) novo(s) enviados · {_tam(p.get('bytes'))} de {_tam(p.get('total_bytes'))}"
+    else:
+        texto = f"comparando com o Drive… {vist} arquivo(s) já estão lá"
+    if p.get("erros"):
+        texto += f" · {p['erros']} erro(s)"
+    return {"feitos": feitos, "total": total, "texto": texto,
+            "percentual": min(100, round(feitos * 100 / total, 1)) if total else None}
+
+
 def _nome_tarefa(job: ScrapingJob, sigla: str) -> str:
     if job.tipo == "crawl":
         return f"{sigla} (varredura do portal)"
@@ -315,6 +343,9 @@ def resumo_painel(s: Session = Depends(get_session)):
         )
         feitos = sum(v for k, v in cont.items() if k != DownloadStatus.PENDING)
         total = max(job.total_pdfs_encontrados or 0, sum(cont.values()))
+        if job.tipo == "drive":
+            pd = _progresso_drive(job)
+            feitos, total = pd["feitos"], max(pd["total"], 1)
         agora_lista.append({
             "nome": _nome_tarefa(job, sigla),
             "feitos": feitos,
@@ -613,6 +644,76 @@ def descartar_paginas():
     return {"descartadas": descartar_paginas_fila_erros()}
 
 
+# ---------- Google Drive: conectar a conta e enviar ----------
+
+
+class DriveToken(BaseModel):
+    token: str
+
+
+class DriveEnvio(BaseModel):
+    link: str
+    subpasta: str = ""
+
+
+@router.get("/drive")
+def drive_estado(s: Session = Depends(get_session)):
+    try:
+        pastas = sorted(p.name for p in storage.raiz().iterdir()
+                        if p.is_dir() and not p.name.startswith((".", "_")))
+    except OSError:
+        pastas = []
+    ult = s.execute(
+        select(ScrapingJob).where(ScrapingJob.tipo == "drive").order_by(ScrapingJob.started_at.desc()).limit(1)
+    ).scalar_one_or_none()
+    ultimo = None
+    if ult:
+        ultimo = {"situacao": ult.status.value, "texto": _progresso_drive(ult)["texto"],
+                  "iniciada_em": ult.started_at.isoformat() if ult.started_at else None,
+                  "concluida_em": ult.completed_at.isoformat() if ult.completed_at else None}
+    return {"conectado": drive_conectado(), "pastas": pastas, "ultimo": ultimo}
+
+
+@router.post("/drive/conectar")
+def drive_conectar(req: DriveToken):
+    try:
+        salvar_conexao_drive(req.token)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Código inválido: copie o texto inteiro, de { até }")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"conectado": True}
+
+
+@router.post("/drive/desconectar")
+def drive_desconectar():
+    desconectar_drive()
+    return {"conectado": False}
+
+
+@router.post("/drive/enviar", status_code=status.HTTP_202_ACCEPTED)
+def drive_enviar(req: DriveEnvio, s: Session = Depends(get_session)):
+    if not drive_conectado():
+        raise HTTPException(400, "Conecte a conta Google primeiro (em “Conectar conta Google”)")
+    pasta_id = pasta_drive_do_link(req.link)
+    if not pasta_id:
+        raise HTTPException(400, "Link inválido: cole o link da PASTA do Drive (…/drive/folders/…)")
+    sub = req.subpasta.strip().strip("/")
+    if sub:
+        try:
+            ok = storage.caminho(sub).is_dir()
+        except ValueError:
+            ok = False
+        if not ok:
+            raise HTTPException(400, f"A pasta '{sub}' não existe nos arquivos guardados")
+    rodando = s.execute(select(func.count(ScrapingJob.id)).where(
+        ScrapingJob.tipo == "drive", ScrapingJob.status == JobStatus.RUNNING)).scalar_one()
+    if rodando:
+        raise HTTPException(409, "Já há um envio para o Drive em andamento — espere terminar ou cancele")
+    job = start_envio_drive(s, pasta_id, sub)
+    return {"job_id": str(job.id)}
+
+
 def _ultima_versao() -> dict:
     import httpx
 
@@ -895,6 +996,7 @@ _DATASET_PT = {
     "transf_voluntarias": "Convênios", "licitacoes": "Licitações (convênios)",
     "pncp_contratos": "Contratos PNCP", "diario_oficial": "Diário Oficial (IOEPA)",
     "refazer": "Nova tentativa das falhas",
+    "drive": "Envio para o Google Drive",
 }
 
 
@@ -955,7 +1057,14 @@ def progresso_tarefas(s: Session = Depends(get_session)):
             "iniciada_em": job.started_at.isoformat() if job.started_at else None,
             "concluida_em": job.completed_at.isoformat() if job.completed_at else None,
         }
-        if job.tipo == "refazer":
+        if job.tipo == "drive":
+            pd = _progresso_drive(job)
+            t["fonte"] = _DATASET_PT["drive"]
+            sub = json.loads(job.progresso_json or "{}").get("subpasta")
+            t["descricao"] = f"pasta {sub}" if sub else "todos os arquivos"
+            t.update(concluidos=pd["feitos"], total=pd["total"], percentual=pd["percentual"],
+                     texto=pd["texto"], falhas=0)
+        elif job.tipo == "refazer":
             t["fonte"] = _DATASET_PT["refazer"]
             t["descricao"] = f"{total} item(ns) com falha tentados de novo"
             t["percentual"] = min(100, round(feitos * 100 / total, 1)) if total else None

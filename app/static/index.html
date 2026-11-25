@@ -162,6 +162,37 @@
     </div>
   </section>
 
+  <section class="panel" id="drive-box">
+    <h2>☁ Enviar para o Google Drive</h2>
+    <p class="hint" id="drive-estado">verificando…</p>
+    <div class="start-form" id="drive-form">
+      <label>Link da pasta do Drive:
+        <input id="drive-link" type="url" placeholder="https://drive.google.com/drive/folders/..." style="width:100%;max-width:640px">
+      </label>
+      <label>O que enviar:
+        <select id="drive-origem"><option value="">todos os arquivos</option></select>
+      </label>
+      <div class="start-actions">
+        <button id="drive-enviar" class="primary">☁ Enviar para o Drive</button>
+        <span class="hint">roda no servidor (pode fechar o painel) · só envia o que ainda não está na pasta · o espaço usado é o da conta conectada</span>
+      </div>
+    </div>
+    <details id="drive-conexao">
+      <summary>Conectar conta Google (uma vez)</summary>
+      <ol class="hint" style="margin:8px 0 8px 18px;line-height:1.7">
+        <li>No seu computador, baixe o <b>rclone</b> em <a href="https://rclone.org/downloads/" target="_blank" rel="noopener">rclone.org/downloads</a> (Windows, “Intel/AMD 64 Bit”) e descompacte.</li>
+        <li>Na pasta descompactada, abra o PowerShell e rode: <code>.\rclone.exe authorize "drive"</code></li>
+        <li>O navegador abre: entre com a conta Google onde os arquivos devem ficar e autorize.</li>
+        <li>Volte ao PowerShell, copie o código que apareceu (começa com <code>{"access_token"</code> e termina em <code>}</code>) e cole abaixo.</li>
+      </ol>
+      <textarea id="drive-token" rows="3" style="width:100%;max-width:640px" placeholder='{"access_token":"...","refresh_token":"...",...}'></textarea>
+      <div class="start-actions" style="margin-top:8px">
+        <button id="drive-conectar">Conectar</button>
+        <button id="drive-desconectar" class="mini" hidden>desconectar a conta</button>
+      </div>
+    </details>
+  </section>
+
   <section class="panel">
     <h2>⚙ Fonte de dados — qualquer site</h2>
     <p class="hint">Para sites que <b>não</b> são só lista de PDFs: uma API (JSON) ou uma página com tabela. Preencha, clique em <b>Testar</b> para ver as colunas antes de salvar, e a coleta vira um CSV.</p>

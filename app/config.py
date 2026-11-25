@@ -47,6 +47,10 @@ MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 # LOCAL_EXPORT_DIR e o nome antigo da mesma configuracao (ainda aceito).
 ARQUIVOS_DIR = os.getenv("ARQUIVOS_DIR") or os.getenv("LOCAL_EXPORT_DIR") or "/downloads"
 LOCAL_EXPORT_DIR = ARQUIVOS_DIR  # compatibilidade com o codigo/.env antigos
+# Envio ao Google Drive (rclone dentro da imagem). A configuracao com a
+# autorizacao da conta fica escondida na pasta de arquivos (nao aparece no painel)
+RCLONE_BIN = os.getenv("RCLONE_BIN", "rclone")
+RCLONE_CONFIG = os.getenv("RCLONE_CONFIG", os.path.join(ARQUIVOS_DIR, ".drive", "rclone.conf"))
 
 BROWSERLESS_URL = os.getenv("BROWSERLESS_URL", "http://browserless:3000")
 BROWSERLESS_TOKEN = os.getenv("BROWSERLESS_TOKEN", "scraper")

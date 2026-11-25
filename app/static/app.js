@@ -990,6 +990,7 @@ function refreshAll() {
   loadJobs();
   loadDocuments();
   loadFila().catch(() => {});
+  loadDrive();
   // self-healing: o que falhar no boot (API ainda subindo) retenta aqui
   // ate conseguir uma vez — depois nao re-entra p/ nao apagar a selecao
   if (!secsLoaded) loadSecretarias().catch(() => {});
@@ -1003,4 +1004,66 @@ loadFolhaOpcoes();
 setInterval(() => { if ($("autorefresh").checked && !document.hidden) refreshAll(); }, 5000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && $("autorefresh").checked) refreshAll();
+});
+
+// ---------- Google Drive: enviar os arquivos guardados ----------
+let driveVistoEm = 0;
+async function loadDrive(forcar) {
+  if (!forcar && Date.now() - driveVistoEm < 30000) return;
+  driveVistoEm = Date.now();
+  try {
+    const d = await api("/drive");
+    const ult = d.ultimo;
+    let estado = d.conectado ? "✅ Conta Google conectada." : "⚠ Conta Google ainda não conectada — abra “Conectar conta Google” abaixo.";
+    if (ult) estado += ` Último envio: ${ult.situacao === "RUNNING" ? "em andamento" : ROTULOS[ult.situacao] || ult.situacao} — ${ult.texto}`;
+    $("drive-estado").textContent = estado;
+    $("drive-enviar").disabled = !d.conectado || (ult && ult.situacao === "RUNNING");
+    $("drive-desconectar").hidden = !d.conectado;
+    if (!d.conectado) $("drive-conexao").open = true;
+    const sel = $("drive-origem"), atual = sel.value;
+    sel.innerHTML = '<option value="">todos os arquivos</option>' +
+      d.pastas.map((p) => `<option value="${esc(p)}">só a pasta ${esc(p)}</option>`).join("");
+    sel.value = d.pastas.includes(atual) ? atual : "";
+  } catch (e) {
+    $("drive-estado").textContent = "Não consegui consultar o Drive agora.";
+  }
+}
+
+(function () {
+  try { $("drive-link").value = localStorage.getItem("driveLink") || ""; } catch (e) {}
+})();
+
+$("drive-enviar").addEventListener("click", async () => {
+  const link = $("drive-link").value.trim();
+  if (!link) return toast("Cole o link da pasta do Drive", true);
+  const sub = $("drive-origem").value;
+  if (!confirm(`Enviar ${sub ? "a pasta " + sub : "todos os arquivos guardados"} para esta pasta do Drive?\n\n${link}\n\nSó vai o que ainda não estiver lá. O andamento aparece em “Coleta agora”.`)) return;
+  $("drive-enviar").disabled = true;
+  try {
+    await api("/drive/enviar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ link, subpasta: sub }) });
+    try { localStorage.setItem("driveLink", link); } catch (e) {}
+    toast("Envio para o Drive iniciado — acompanhe em “Coleta agora”");
+    loadDrive(true); loadOverview(); loadProgressoTarefas();
+  } catch (err) {
+    toast(err.message, true);
+    $("drive-enviar").disabled = false;
+  }
+});
+
+$("drive-conectar").addEventListener("click", async () => {
+  const token = $("drive-token").value.trim();
+  if (!token) return toast("Cole o código do rclone authorize", true);
+  try {
+    await api("/drive/conectar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }) });
+    $("drive-token").value = "";
+    $("drive-conexao").open = false;
+    toast("Conta Google conectada ✅");
+    loadDrive(true);
+  } catch (err) { toast(err.message, true); }
+});
+
+$("drive-desconectar").addEventListener("click", async () => {
+  if (!confirm("Desconectar a conta Google? Os arquivos que já estão no Drive continuam lá.")) return;
+  try { await api("/drive/desconectar", { method: "POST" }); toast("Conta desconectada"); loadDrive(true); }
+  catch (err) { toast(err.message, true); }
 });
