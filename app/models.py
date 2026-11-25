@@ -24,6 +24,10 @@ class DownloadStatus(str, enum.Enum):
     # a fonte respondeu, mas nao havia registros (ex.: orgao sem folha no mes) —
     # nao e erro; separado para nao inflar o contador de falhas
     SEM_DADOS = "SEM_DADOS"
+    # falha que o usuario tirou da lista no painel (ex.: link quebrado de vez):
+    # nao conta mais como falha e nao e refeita; o registro fica para o crawl
+    # nao baixar o mesmo link de novo
+    DESCARTADO = "DESCARTADO"
 
 
 class Secretaria(Base):
@@ -96,6 +100,8 @@ class Documento(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # motivo da falha, em portugues, para o painel ("Link quebrado (HTTP 404)"...)
+    erro: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     secretaria: Mapped[Secretaria] = relationship(back_populates="documentos")
     job: Mapped[ScrapingJob] = relationship(back_populates="documentos")

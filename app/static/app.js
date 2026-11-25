@@ -15,7 +15,7 @@ const fmtBytes = (n) => {
   const u = [["TB", 1e12], ["GB", 1e9], ["MB", 1e6], ["KB", 1e3]].find(([, v]) => n >= v);
   return u ? (n / u[1]).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + " " + u[0] : n + " B";
 };
-const ROTULOS = { RUNNING: "Em andamento", COMPLETED: "Concluído", FAILED: "Falhou", CANCELLED: "Cancelado", SUCCESS: "Sucesso", PENDING: "Pendente", SEM_DADOS: "Sem dados" };
+const ROTULOS = { RUNNING: "Em andamento", COMPLETED: "Concluído", FAILED: "Falhou", CANCELLED: "Cancelado", SUCCESS: "Sucesso", PENDING: "Pendente", SEM_DADOS: "Sem dados", DESCARTADO: "Descartado" };
 const badge = (st) => `<span class="badge ${esc(st)}">${esc(ROTULOS[st] || st)}</span>`;
 const barra = (pct, feito) =>
   `<div class="barra-linha"><div class="bar"><div class="bar-fill${feito ? " done" : ""}" style="width:${pct}%"></div></div><span class="bar-pct">${pct}%</span></div>`;
@@ -125,7 +125,8 @@ async function loadOverview() {
     $("docs-fail").textContent = num(r.falhas.total);
     const naFila = r.falhas.na_fila_de_erros;
     $("falhas-detalhe").textContent = naFila > 0 ? `${num(naFila)} esperando nova tentativa` : "";
-    $("btn-requeue").hidden = !(naFila > 0);
+    $("btn-falhas").hidden = !(r.falhas.total > 0 || naFila > 0);
+    if (Date.now() - versaoVistaEm > 10 * 60 * 1000) verificaVersao(r.versao);
 
     // detalhes tecnicos
     const t = r.tecnico;
@@ -140,17 +141,79 @@ async function loadOverview() {
   }
 }
 
-$("btn-requeue").addEventListener("click", async () => {
-  $("btn-requeue").disabled = true;
+// ---------- Versao: avisa quando ha uma nova publicada ----------
+let versaoVistaEm = 0;
+async function verificaVersao(atual) {
+  versaoVistaEm = Date.now();
   try {
-    const r = await api("/dead-letters/requeue", { method: "POST" });
-    toast(r.requeued ? `${r.requeued} parte(s) enviada(s) para nova tentativa` : "Nada esperando nova tentativa");
-    loadOverview();
-  } catch (err) {
-    toast(err.message, true);
-  } finally {
-    $("btn-requeue").disabled = false;
-  }
+    const v = await api("/versao");
+    const el = $("versao");
+    if (v.nova_disponivel) {
+      el.outerHTML = `<a id="versao" class="pill nova" href="${esc(v.url)}" target="_blank" rel="noopener"
+        title="Versão nova publicada. Para instalar, peça ao administrador do servidor: ./deploy/atualizar.sh">v${esc(v.atual)} → v${esc(v.ultima)} disponível</a>`;
+    }
+  } catch (e) { /* sem internet no servidor: segue sem o aviso */ }
+}
+
+// ---------- Falhas: ver o motivo, tentar de novo, descartar ----------
+const postJson = (path, body) =>
+  api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+
+async function loadFalhas() {
+  const f = await api("/falhas");
+  $("falhas-resumo").textContent = !f.total
+    ? "Nenhuma falha. ✅"
+    : `${num(f.total)} falha(s): ${num(f.refaziveis)} podem dar certo tentando de novo · ${num(f.permanentes)} são link quebrado ou não-PDF (não adianta tentar).`;
+  $("falhas-refazer").disabled = !f.refaziveis;
+  $("falhas-descartar-perm").disabled = !f.permanentes;
+  $("falhas-tbody").innerHTML = f.grupos.length ? f.grupos.map((g) => {
+    const ex = g.exemplos[0];
+    const dados = `data-fonte="${esc(g.fonte)}" data-motivo="${esc(g.motivo)}" data-perm="${g.permanente}"`;
+    return `<tr><td class="nowrap"><b>${esc(g.fonte_nome)}</b></td>` +
+      `<td>${esc(g.motivo_texto)}${g.permanente ? ' <span class="tag-perm">(não adianta tentar)</span>' : ""}</td>` +
+      `<td class="c" style="text-align:right">${num(g.quantidade)}</td>` +
+      `<td class="url" title="${esc(ex ? ex.url : "")}">${ex ? esc(ex.url) : ""}</td>` +
+      `<td class="nowrap"><button class="mini" data-acao="refazer" ${dados}>tentar de novo</button> ` +
+      `<button class="mini" data-acao="descartar" ${dados}>descartar</button></td></tr>`;
+  }).join("") : '<tr><td colspan="5" class="empty">sem falhas</td></tr>';
+}
+
+function abreFalhas() {
+  $("falhas-box").hidden = false;
+  loadFalhas().catch((e) => toast(e.message, true));
+  $("falhas-box").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function refazerFalhas(corpo, descricao) {
+  try {
+    const r = await postJson("/falhas/refazer", corpo);
+    toast(r.refeitos
+      ? `${r.refeitos} ${descricao} em nova tentativa — acompanhe em “Coleta agora”`
+      : "Nada para tentar de novo" + (r.paginas_reenviadas ? ` (${r.paginas_reenviadas} página(s) de portal reenviada(s))` : ""));
+    loadFalhas(); loadOverview(); loadProgressoTarefas();
+  } catch (err) { toast(err.message, true); }
+}
+
+async function descartarFalhas(corpo, pergunta) {
+  if (!confirm(pergunta + "\n\nElas saem da lista e o sistema não tenta mais. (O registro fica guardado para o sistema não baixar o mesmo link quebrado de novo.)")) return;
+  try {
+    const r = await postJson("/falhas/descartar", corpo);
+    toast(`${r.descartadas} falha(s) descartada(s)`);
+    loadFalhas(); loadOverview();
+  } catch (err) { toast(err.message, true); }
+}
+
+$("btn-falhas").addEventListener("click", abreFalhas);
+$("falhas-fechar").addEventListener("click", () => { $("falhas-box").hidden = true; });
+$("falhas-refazer").addEventListener("click", () => refazerFalhas({}, "falha(s)"));
+$("falhas-descartar-perm").addEventListener("click", () =>
+  descartarFalhas({ so_permanentes: true }, "Descartar todos os links quebrados e arquivos que não são PDF?"));
+$("falhas-tbody").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-acao]");
+  if (!b) return;
+  const corpo = { fonte: b.dataset.fonte, motivo: b.dataset.motivo, incluir_permanentes: b.dataset.perm === "true" };
+  if (b.dataset.acao === "refazer") refazerFalhas(corpo, "item(ns)");
+  else descartarFalhas(corpo, `Descartar estas falhas de ${b.closest("tr").querySelector("b").textContent}?`);
 });
 
 // ---------- Secretarias ----------
