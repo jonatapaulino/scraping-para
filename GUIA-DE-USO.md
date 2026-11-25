@@ -2,7 +2,17 @@
 
 Tudo é feito pelo painel: **http://localhost:8000/ui** (abre só neste computador — veja *Abrir em outro aparelho* no fim)
 
-## Ligar e desligar
+## Abrir o painel (o sistema roda no servidor)
+O sistema roda no **servidor Xavier**, 24 horas por dia, mesmo com o notebook desligado. No notebook você só abre o painel:
+1. Na pasta `C:\scraping-para-main`, dê dois cliques em **`abrir-painel-servidor.bat`**.
+2. Abre uma janela preta: **deixe-a aberta**. Em alguns segundos o navegador abre:
+   - **Painel**: http://localhost:8000/ui
+   - **Arquivos guardados** no servidor (só leitura: tamanho das pastas, espaço livre, abrir/baixar): http://localhost:8001
+3. Para sair, feche a janela preta. As coletas continuam no servidor.
+
+Se uma aba mostrar "recusou a se conectar", espere uns segundos e aperte F5. **Não use mais o `iniciar.bat`**: ele liga o sistema antigo no notebook. Mudanças no código do servidor: peça ao administrador um `git pull` e o rebuild.
+
+## Ligar e desligar (sistema local, antigo)
 1. Abra o **Docker Desktop** (precisa estar aberto).
 2. Duplo clique em `iniciar.bat` — o painel abre sozinho.
 3. Para desligar: `parar.bat` (os dados ficam guardados).
