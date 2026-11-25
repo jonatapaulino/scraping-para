@@ -5,7 +5,7 @@ fastapi==0.115.6
 fastapi-pagination==0.12.34
 uvicorn==0.34.0
 sqlalchemy==2.0.36
-psycopg[binary]==3.2.3
+psycopg[binary]==3.3.9
 minio==7.2.20
 google-api-python-client==2.201.0
 httpx==0.28.1
