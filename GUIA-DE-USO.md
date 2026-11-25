@@ -1,6 +1,6 @@
 # Guia de uso
 
-Tudo é feito pelo painel: **http://localhost:8000/ui**
+Tudo é feito pelo painel: **http://localhost:8000/ui** (abre só neste computador — veja *Abrir em outro aparelho* no fim)
 
 ## Ligar e desligar
 1. Abra o **Docker Desktop** (precisa estar aberto).
@@ -43,6 +43,17 @@ Se a tabela só aparece com JavaScript, marque *página com JavaScript*. Se o si
 ## 3. Dados abertos da Transparência
 Seção **Dados abertos**: escolha o dataset (folha, despesas, diárias…), o período e os órgãos (ou *todos*) → **Coletar**. Gera um CSV por mês/órgão. Esta seção **não tem agenda automática**: é sempre manual.
 
+### Fila automática (várias coletas, uma de cada vez, sem você)
+Em vez de **Coletar**, clique em **➕ Pôr na fila (uma por vez)**. A coleta entra numa lista que o sistema roda **sozinho, uma de cada vez, na ordem**: quando uma termina, a próxima começa (confere a cada minuto, de dia ou de noite).
+- **Tudo de 2019 a 2025:** dataset *— todos os datasets —*, de `2019-01` até `2025-12`, *todos os órgãos* → **Pôr na fila**. Vira um item por dataset (14 itens).
+- O Diário Oficial não entra em "todos os datasets": escolha *Diário Oficial (IOEPA)* e ponha na fila separado, se quiser.
+- A lista aparece logo abaixo: **Na fila → Rodando → Concluída/Falhou**. A que está rodando mostra a barra de progresso no topo.
+- **×** tira da fila o que ainda não começou. Para parar a que está rodando, use **cancelar** no progresso — a fila segue para a próxima.
+- Uma coleta que falhou **não trava** a fila. Para tentar de novo o que falhou, ponha o mesmo dataset na fila outra vez (sem *recoletar*): o que já deu certo é pulado e só o que falhou é refeito.
+- O computador e o Docker precisam ficar ligados. Se desligar no meio, ao voltar a fila continua de onde parou.
+
+Órgão que não publicou nada no período aparece como **Sem dados** (cinza) — não é erro e não entra na contagem de *Falhas*.
+
 ## A tabela Secretarias
 | Coluna | O que é |
 |---|---|
@@ -75,7 +86,8 @@ Marque a caixa da fonte e escolha o horário (Brasília). **Nada roda sozinho se
 | Tarefa com 0 PDFs | filtro de PDFs → `*` (veja seção 1) |
 | **Testar** deu erro | leia a mensagem: costuma ser URL errada, "não é JSON" (use *tabela*) ou caminho inexistente |
 | Tarefa travada | **cancelar** e rodar de novo |
-| Falhas na lista | *Fila de erros → reprocessar* |
+| Falhas na lista | *Fila de erros → reprocessar* (itens **Sem dados** não são falha: o órgão não publicou nada) |
+| Coleta: "Endereço interno bloqueado" | a URL aponta para o próprio computador/sistema — por segurança isso não é permitido |
 | Mudou o site e parou de achar PDFs | aumente a **profundidade** ou ajuste o **filtro** |
 
 ## Quando ainda precisa de ajuda técnica
@@ -84,3 +96,6 @@ Só nestes casos (não dá para resolver pelo painel):
 - API que exige um fluxo próprio (vários passos) — vira código novo;
 - ajustes globais no `.env` (proxy, Google Drive, limites) — exige reiniciar;
 - **mudar o código** do sistema — siga o `FLUXO-DE-MUDANCA.md`.
+
+## Abrir em outro aparelho (celular, outro PC)
+Por segurança o painel só abre neste computador. Para liberar na rede de casa/escritório: no `.env`, troque `PAINEL_BIND=127.0.0.1` por `PAINEL_BIND=0.0.0.0` e rode `iniciar.bat` de novo. O painel **não tem senha** — não faça isso em rede pública (café, hotel). O banco e o armazenamento continuam fechados.

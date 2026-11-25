@@ -6,7 +6,7 @@ Use sempre que alterar algo em `app/` (Python, HTML, JS, CSS). Mudanças **só n
 O código vai dentro da imagem do Docker, então só vale depois do rebuild:
 
 ```bash
-docker compose up -d --build api worker-discovery worker-download beat
+docker compose up -d --build api worker-discovery worker-download worker-control beat
 ```
 - Antes, confira no painel se **não há tarefa rodando** (o rebuild interrompe o que está em andamento).
 - Só mudou HTML/JS/CSS? Basta `docker compose up -d --build api`.

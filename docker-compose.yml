@@ -4,8 +4,8 @@ services:
     image: rabbitmq:3.13-management
     hostname: rabbitmq
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-scraper}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-scraper}
@@ -23,7 +23,7 @@ services:
     restart: unless-stopped
     image: postgres:16-alpine
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-scraper}
       POSTGRES_USER: ${POSTGRES_USER:-scraper}
@@ -38,10 +38,11 @@ services:
 
   minio:
     restart: unless-stopped
-    image: bitnamilegacy/minio:latest
+    # versao fixa (a mesma que ja rodava): 'latest' mudava sozinha a cada rebuild
+    image: bitnamilegacy/minio@sha256:451fe6858cb770cc9d0e77ba811ce287420f781c7c1b806a386f6896471a349c
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
@@ -51,11 +52,11 @@ services:
 
   browserless:
     restart: unless-stopped
-    image: browserless/chrome:latest
+    image: browserless/chrome@sha256:57d19e414d9fe4ae9d2ab12ba768c97f38d51246c5b31af55a009205c136012f
     environment:
       TOKEN: ${BROWSERLESS_TOKEN:-scraper}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     shm_size: 1gb
 
   api:
@@ -64,7 +65,7 @@ services:
     command: python -m app.main
     env_file: .env
     ports:
-      - "8000:8000"
+      - "${PAINEL_BIND:-127.0.0.1}:8000:8000"
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -106,6 +107,19 @@ services:
       minio:
         condition: service_started
 
+  worker-control:
+    # agenda diaria, reconciliador e disparos do Beat: fila propria (q.control)
+    # para nao esperar atras do crawl; 1 processo = agendas nunca em paralelo
+    build: .
+    restart: unless-stopped
+    command: celery -A app.celery_app worker -Q q.control -c 1 -n control@%h --loglevel=INFO --max-tasks-per-child=200
+    env_file: .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
   beat:
     restart: unless-stopped
     build: .
@@ -122,10 +136,8 @@ services:
     build: .
     command: celery -A app.celery_app flower --port=5555 --loglevel=INFO
     env_file: .env
-    environment:
-      FLOWER_UNAUTHENTICATED_API: "true"
     ports:
-      - "5555:5555"
+      - "127.0.0.1:5555:5555"
     depends_on:
       rabbitmq:
         condition: service_healthy

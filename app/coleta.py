@@ -10,11 +10,14 @@ Paginacao: ponha ``{page}`` na URL (ex.: ``https://x/api?pagina={page}``);
 a coleta anda pagina a pagina ate vir vazia/repetida ou chegar em ``max_paginas``.
 """
 import hashlib
+import ipaddress
 import json
 import re
+import socket
 import time
+from functools import lru_cache
 from typing import Iterator, Literal
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, field_validator
@@ -146,10 +149,59 @@ def linhas_tabela(html: str, seletor: str = "", base_url: str = "") -> list[dict
     return linhas
 
 
+# ---------- protecao: a coleta nao pode ler os servicos internos ----------
+# Sem isso, "Testar" com http://minio:9000, http://rabbitmq:15672 ou
+# http://host.docker.internal:5432 devolvia o conteudo dos servicos do proprio
+# sistema. Redes privadas comuns (10.x, 192.168.x) continuam liberadas — podem
+# ser intranet de orgao; so a rede interna do Docker e bloqueada.
+
+_HOSTS_BLOQUEADOS = {"host.docker.internal", "gateway.docker.internal", "metadata.google.internal"}
+
+
+@lru_cache(maxsize=1)
+def _rede_docker():
+    """Sub-rede do proprio container (/16) — onde vivem os servicos internos."""
+    try:
+        ip = ipaddress.ip_address(socket.gethostbyname(socket.gethostname()))
+        if ip.is_private:
+            return ipaddress.ip_network(f"{ip}/16", strict=False)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def checa_destino(url: str) -> None:
+    """ValueError se a URL aponta para o proprio sistema/rede interna."""
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    msg = f"Endereço interno bloqueado por segurança: {host or url}"
+    if not host or host in _HOSTS_BLOQUEADOS or host.endswith(".localhost"):
+        raise ValueError(msg)
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is None and "." not in host:
+        raise ValueError(msg)  # nomes sem dominio: localhost, minio, postgres...
+    try:
+        ips = {ipaddress.ip_address(i[4][0]) for i in socket.getaddrinfo(host, None)}
+    except (OSError, ValueError):
+        return  # nao resolve: a propria requisicao falha com erro de rede
+    rede = _rede_docker()
+    for ip in ips:
+        if (ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast
+                or ip.is_reserved or (rede is not None and ip in rede)):
+            raise ValueError(msg)
+
+
+def _checa_requisicao(request) -> None:
+    checa_destino(str(request.url))  # roda tambem a cada redirecionamento
+
+
 def _pagina(cfg: ColetaConfig, url: str) -> list[dict]:
+    checa_destino(url)
     if cfg.modo == "tabela_html" and cfg.renderizar:
         return linhas_tabela(http_client.render(url), cfg.caminho, url)
-    with http_client.new_client() as c:
+    with http_client.new_client(event_hooks={"request": [_checa_requisicao]}) as c:
         c.headers.update(_cabecalhos(cfg))
         resp = c.get(url)
         resp.raise_for_status()

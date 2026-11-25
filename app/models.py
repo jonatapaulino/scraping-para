@@ -21,6 +21,9 @@ class DownloadStatus(str, enum.Enum):
     PENDING = "PENDING"
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
+    # a fonte respondeu, mas nao havia registros (ex.: orgao sem folha no mes) —
+    # nao e erro; separado para nao inflar o contador de falhas
+    SEM_DADOS = "SEM_DADOS"
 
 
 class Secretaria(Base):
@@ -84,7 +87,8 @@ class Documento(Base):
     job_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("scraping_job.id"), index=True)
     url_origem: Mapped[str] = mapped_column(Text, unique=True)
     hash_sha256: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
-    minio_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # TEXT: caminhos de dataset/anexo podem passar de 255 (antes: erro no UPDATE)
+    minio_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     tamanho_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     magic_byte_valido: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     status_download: Mapped[DownloadStatus] = mapped_column(
@@ -95,6 +99,30 @@ class Documento(Base):
 
     secretaria: Mapped[Secretaria] = relationship(back_populates="documentos")
     job: Mapped[ScrapingJob] = relationship(back_populates="documentos")
+
+
+class ColetaFila(Base):
+    """Fila automatica de coletas de dados abertos, montada no painel: o
+    sistema roda UMA por vez, em ordem, e passa para a proxima sozinho quando
+    a anterior termina (worker-control, a cada minuto)."""
+
+    __tablename__ = "coleta_fila"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dataset: Mapped[str] = mapped_column(String(32))
+    ano_ini: Mapped[int] = mapped_column(Integer)
+    mes_ini: Mapped[int] = mapped_column(Integer)
+    ano_fim: Mapped[int] = mapped_column(Integer)
+    mes_fim: Mapped[int] = mapped_column(Integer)
+    orgaos_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # None = todos
+    force: Mapped[bool] = mapped_column(Boolean, default=False)
+    # AGUARDANDO -> RODANDO -> CONCLUIDA | FALHOU | CANCELADA
+    status: Mapped[str] = mapped_column(String(12), default="AGUARDANDO", index=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    erro: Mapped[str | None] = mapped_column(Text, nullable=True)
+    criada_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    iniciada_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    concluida_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # --- Tabelas internas de infraestrutura (fora do contrato SDD) ---

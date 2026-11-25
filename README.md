@@ -30,6 +30,7 @@ Você cadastra secretarias, dispara raspagens (manual ou agendada) e os PDFs cae
 | `api` | FastAPI — REST + dashboard em `/ui` | 8000 |
 | `worker-discovery` | Navega páginas, extrai links PDF e links internos | — |
 | `worker-download` | Baixa PDFs, valida `%PDF-`, deduplica, grava MinIO + disco | — |
+| `worker-control` | Tarefas curtas de controle (agenda diária, reconciliador) na fila `q.control` — não esperam atrás do crawl | — |
 | `beat` | Dispara jobs para secretarias ativas (cron) | — |
 | `rabbitmq` | Filas `q.discovery`, `q.download` + DLX `q.dead` | 5672 / 15672 |
 | `postgres` | Metadados: secretarias, jobs, documentos, páginas | 5432 |
@@ -54,6 +55,8 @@ cd scraping-para
 cp .env.example .env   # ajuste se quiser
 docker compose up -d --build
 ```
+
+Todas as portas ficam **só neste computador** (`127.0.0.1`) — ninguém na mesma rede Wi-Fi alcança o banco, o MinIO ou o painel. Para abrir o painel a outros aparelhos da rede, defina `PAINEL_BIND=0.0.0.0` no `.env` (o painel não tem login: só faça isso em rede confiável).
 
 | Acesso | URL | Login |
 |---|---|---|
@@ -142,7 +145,8 @@ docker compose up -d --scale worker-discovery=4 --scale worker-download=8
 | `RECONCILE_CRON` | `*/30 * * * *` | Frequência do reconciliador no Beat |
 | `LOCAL_EXPORT_DIR` | `/downloads` | Espelho local (mapeado p/ `./downloads` no host) |
 | `SEED_SECRETARIAS` | — | `SIGLA=url;SIGLA2=url2` p/ cadastrar no boot |
-| `PROXY_POOL` | — | Proxies separados por `;` p/ discovery |
+| `PROXY_POOL` | — | Proxies separados por `;` ou `,` p/ discovery |
+| `PAINEL_BIND` | `127.0.0.1` | Endereço do painel; `0.0.0.0` abre para a rede local |
 | `FOLHA_API_BASE` / `DESPESAS_API_BASE` | api-servidores… / api-despesas… | Endpoints das APIs da transparência |
 | `FOLHA_PAGE_SIZE` / `FOLHA_PAGE_DELAY_SECONDS` | `1000` / `1` | Tamanho de página e pausa entre páginas |
 | `GDRIVE_ENABLED` / `GDRIVE_ROOT_FOLDER_ID` | `false` / — | Espelho no Drive (ver seção) |
@@ -190,9 +194,13 @@ Datasets disponíveis (`app/transparencia.py` — adicionar um novo = funções 
 Indisponíveis (sem API alcançável — endpoints não respondem): `compras`, `planejamento`.
 
 - **Painel**: seção *Dados abertos* — escolha o dataset, o intervalo e os órgãos (ou todos) e clique *Coletar*
+- **Fila automática**: *➕ Pôr na fila* em vez de *Coletar* — as coletas rodam uma por vez, em ordem, e a próxima começa sozinha quando a anterior termina (`avancar_fila` no `worker-control`, a cada minuto). Falha não trava a fila; sem *recoletar*, partes que já deram certo são puladas e só as que falharam são refeitas. API: `GET/POST /api/v1/fila`, `DELETE /api/v1/fila/{id}`, `POST /api/v1/fila/limpar`
 - **Unidade = um CSV por órgão**: cada órgão selecionado gera um arquivo próprio; "todos" expande para **um CSV por órgão do período**
 - **Saída**: `downloads/<SIGLA>/<dataset>/<recorte>/<dataset>-<recorte>-<SIGLA>.csv` (UTF-8 com BOM) + MinIO — pasta por sigla, igual ao crawl de PDFs
-  - datasets sem órgão ou varredura única (`diarias` com "todos", `transf_voluntarias`) → `downloads/<dataset>/<recorte>/`
+  - a pasta usa a **sigla oficial** (a da API de despesas), sem acento nem espaço: nomes por extenso, siglas de outras APIs e apelidos (`PCPA`, `Casa Civil`, `FSCMP`…) caem na mesma pasta. A tabela `APELIDOS` em `app/transparencia.py` lista as equivalências
+  - datasets sem órgão ou varredura única (`diarias` com "todos") → `downloads/<dataset>/<recorte>/`
+  - as colunas do CSV são a união de todas as linhas (campo que só aparece em parte dos registros não é descartado)
+  - órgão sem nenhum registro no período fica como **Sem dados** (não conta como falha)
 - **Documentos PDF**: `transf_voluntarias` também baixa termo + plano de trabalho de cada convênio em `<SIGLA DO CONCEDENTE>/transf_voluntarias/documentos/<nº convênio>/{termo,plano_trabalho}.pdf` (dedup por hash quando os dois ids apontam pro mesmo arquivo)
 - **Dedup**: cada (dataset × mês × seleção) é um documento — recoletar exige marcar *recoletar*
 - A fonte aparece como `TRANSPARENCIA` (tipo `api`) — não entra nas rodadas de crawl do Beat
@@ -201,12 +209,26 @@ Indisponíveis (sem API alcançável — endpoints não respondem): `compras`, `
 ## Resiliência
 
 - **Magic bytes**: só grava arquivos que começam com `%PDF-`
+- **Um caminho por URL**: o nome do PDF ganha um sufixo curto da URL (`edital__3fa2c1d0.pdf`) — dois arquivos de mesmo nome no mesmo ano não se sobrescrevem. O ano também é lido de pastas `AAAA-MM` (ex.: `/files/2023-01/`)
+- **Contador de progresso idempotente**: um documento só desconta a pendência do job ao sair de `PENDING` — reentrega, reprocesso da fila de erros e o reconciliador não descontam duas vezes
 - **Dedup**: URL de origem e SHA-256 únicos — jobs repetidos não baixam de novo
 - **Re-crawl**: páginas deduplicadas expiram após `CRAWL_DEDUP_HOURS` — rodadas agendadas descobrem documentos novos em páginas já conhecidas
+- **Cancelar**: interrompe também os loops longos (PDFs anexos do Diário/PNCP/convênios); documentos que já tinham arquivo continuam como baixados
+- **Sem baixar de novo**: com *recoletar*, o PDF só é baixado se o site informar tamanho/data diferentes (requisição `HEAD`); fonte excluída e recadastrada reaproveita os arquivos já guardados (mesmo tamanho) em vez de duplicar
 - **Retry**: 5 tentativas com backoff `120s × 2ⁿ` (máx. 1h); 4xx é falha terminal; falhas de MinIO/rede também são retriáveis
 - **DLX**: tarefas esgotadas vão para `q.dead` (visível no painel, reprocessável pelo botão *reprocessar*)
-- **Reconciliador**: task periódica do Beat marca documentos `PENDING` órfãos e jobs `RUNNING` zumbis como `FAILED`
+- **Reconciliador**: task periódica do Beat marca documentos `PENDING` órfãos e jobs `RUNNING` zumbis (sem nenhuma atividade há `JOB_STALL_HOURS`) como `FAILED` — coletas longas que seguem trabalhando não são interrompidas
+- **Coleta genérica**: não acessa endereços internos (serviços do próprio sistema, `localhost`, `host.docker.internal`, 169.254.x) — nem por redirecionamento
 - **JS**: páginas sem links no HTML bruto são rerenderizadas via Browserless
+
+## Juntar pastas de órgão duplicadas (uma vez, após atualizar)
+
+Versões antigas criavam pastas diferentes para o mesmo órgão (`IDEFLORBIO`, `IDEFLOR_-_BIO`, nomes com acento quebrado como `AG_NCIA_...`). O script abaixo junta tudo na pasta da sigla oficial — no MinIO, em `downloads/` e no banco. Ele **só simula** sem `--aplicar` e nunca sobrescreve um arquivo diferente (conflitos ficam onde estão e aparecem no relatório):
+
+```bash
+docker compose exec worker-download python -m app.juntar_pastas            # mostra o plano
+docker compose exec worker-download python -m app.juntar_pastas --aplicar  # executa
+```
 
 ## Estrutura
 
@@ -215,7 +237,8 @@ app/
 ├── main.py          # FastAPI: app, /ui estático
 ├── routers.py       # contratos /api/v1
 ├── celery_app.py    # Celery + beat schedule
-├── tasks.py         # discover_page / download_document
+├── tasks.py         # discover_page / download_document / datasets / coleta
+├── juntar_pastas.py # manutenção: junta pastas de órgão duplicadas
 ├── models.py        # secretaria, scraping_job, documento (SQLAlchemy)
 ├── broker.py        # declaração das filas + DLX
 ├── storage.py       # MinIO

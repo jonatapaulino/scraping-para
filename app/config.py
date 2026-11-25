@@ -42,7 +42,10 @@ LOCAL_EXPORT_DIR = os.getenv("LOCAL_EXPORT_DIR", "")
 
 BROWSERLESS_URL = os.getenv("BROWSERLESS_URL", "http://browserless:3000")
 BROWSERLESS_TOKEN = os.getenv("BROWSERLESS_TOKEN", "scraper")
-PROXY_POOL = [p.strip() for p in os.getenv("PROXY_POOL", "").split(",") if p.strip()]
+# separados por ',' ou ';' (o README sempre documentou ';')
+PROXY_POOL = [
+    p.strip() for p in os.getenv("PROXY_POOL", "").replace(";", ",").split(",") if p.strip()
+]
 
 MAX_RETRIES = _int("MAX_RETRIES", 5)
 RETRY_BASE_SECONDS = _int("RETRY_BASE_SECONDS", 120)
@@ -130,5 +133,8 @@ GDRIVE_ROOT_FOLDER_ID = os.getenv("GDRIVE_ROOT_FOLDER_ID", "")
 Q_DISCOVERY = "q.discovery"
 Q_DOWNLOAD = "q.download"
 Q_DEAD = "q.dead"
+# tarefas curtas de controle (agenda, reconciliador): fila e worker proprios
+# para nao esperar atras de milhares de paginas na q.discovery
+Q_CONTROL = "q.control"
 DLX_EXCHANGE = "scraper.dlx"
 EXCHANGE = "scraper"

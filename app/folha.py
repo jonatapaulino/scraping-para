@@ -6,6 +6,7 @@ captcha — o endpoint /exportar (botao do site) e o unico protegido e nao
 e necessario: geramos o CSV a partir do JSON paginado."""
 
 import logging
+import threading
 import time
 from typing import Iterator, Optional
 
@@ -15,16 +16,28 @@ log = logging.getLogger(__name__)
 
 _cache: dict[str, tuple[float, object]] = {}
 _CACHE_TTL = 300  # segundos — opcoes mudam pouco; evita martelar a API
+_cache_lock = threading.Lock()
 
 
 def _cached(key: str, fn):
     now = time.monotonic()
-    hit = _cache.get(key)
-    if hit and now - hit[0] < _CACHE_TTL:
-        return hit[1]
-    value = fn()
-    _cache[key] = (now, value)
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and now - hit[0] < _CACHE_TTL:
+            return hit[1]
+    value = fn()  # fora do lock: chamadas de rede lentas nao travam as outras chaves
+    with _cache_lock:
+        # limpa entradas vencidas — antes o cache so crescia (listas grandes do
+        # PNCP/convenios ficavam na memoria do worker)
+        for k in [k for k, (t, _) in _cache.items() if now - t >= _CACHE_TTL]:
+            del _cache[k]
+        _cache[key] = (now, value)
     return value
+
+
+def _descarta(key: str) -> None:
+    with _cache_lock:
+        _cache.pop(key, None)
 
 
 def list_periods() -> list[dict]:
