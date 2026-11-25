@@ -633,6 +633,15 @@ def remover_da_fila(item_id: int, s: Session = Depends(get_session)):
     return {"removido": item_id}
 
 
+@router.post("/fila/esvaziar")
+def esvaziar_fila(s: Session = Depends(get_session)):
+    """Tira da fila tudo o que AINDA NAO comecou (a que esta rodando continua —
+    para ela, use cancelar no progresso)."""
+    n = s.execute(delete(ColetaFila).where(ColetaFila.status == "AGUARDANDO")).rowcount
+    s.commit()
+    return {"removidos": n}
+
+
 @router.post("/fila/limpar")
 def limpar_fila(s: Session = Depends(get_session)):
     """Tira da lista os itens ja terminados (concluidos, com falha ou cancelados)."""
