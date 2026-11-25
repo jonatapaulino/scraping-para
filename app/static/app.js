@@ -164,7 +164,13 @@ async function loadFalhas() {
   $("falhas-resumo").textContent = !f.total
     ? "Nenhuma falha. ✅"
     : `${num(f.total)} falha(s): ${num(f.refaziveis)} podem dar certo tentando de novo · ${num(f.permanentes)} são link quebrado ou não-PDF (não adianta tentar).`;
-  $("falhas-refazer").disabled = !f.refaziveis;
+  $("falhas-refazer").disabled = !f.refaziveis && !(f.fila_erros > 0);
+  const linhaPaginas = f.fila_erros > 0
+    ? `<tr><td class="nowrap"><b>Portais</b></td><td>Páginas de portal que não responderam (esgotaram as tentativas automáticas)</td>` +
+      `<td class="c" style="text-align:right">${num(f.fila_erros)}</td><td></td>` +
+      `<td class="nowrap"><button class="mini" data-acao="paginas-refazer">tentar de novo</button> ` +
+      `<button class="mini" data-acao="paginas-descartar">descartar</button></td></tr>`
+    : "";
   $("falhas-descartar-perm").disabled = !f.permanentes;
   $("falhas-tbody").innerHTML = f.grupos.length ? f.grupos.map((g) => {
     const ex = g.exemplos[0];
@@ -175,7 +181,7 @@ async function loadFalhas() {
       `<td class="url" title="${esc(ex ? ex.url : "")}">${ex ? esc(ex.url) : ""}</td>` +
       `<td class="nowrap"><button class="mini" data-acao="refazer" ${dados}>tentar de novo</button> ` +
       `<button class="mini" data-acao="descartar" ${dados}>descartar</button></td></tr>`;
-  }).join("") : '<tr><td colspan="5" class="empty">sem falhas</td></tr>';
+  }).join("") + linhaPaginas : (linhaPaginas || '<tr><td colspan="5" class="empty">sem falhas</td></tr>');
 }
 
 function abreFalhas() {
@@ -211,6 +217,13 @@ $("falhas-descartar-perm").addEventListener("click", () =>
 $("falhas-tbody").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-acao]");
   if (!b) return;
+  if (b.dataset.acao === "paginas-refazer") return refazerFalhas({ fonte: "__nenhuma__" }, "item(ns)");
+  if (b.dataset.acao === "paginas-descartar") {
+    if (!confirm("Descartar as páginas de portal que não responderam?\n\nO sistema para de tentá-las agora; elas voltam a ser visitadas na próxima varredura do portal.")) return;
+    postJson("/falhas/descartar-paginas").then((r) => { toast(`${r.descartadas} página(s) descartada(s)`); loadFalhas(); loadOverview(); })
+      .catch((err) => toast(err.message, true));
+    return;
+  }
   const corpo = { fonte: b.dataset.fonte, motivo: b.dataset.motivo, incluir_permanentes: b.dataset.perm === "true" };
   if (b.dataset.acao === "refazer") refazerFalhas(corpo, "item(ns)");
   else descartarFalhas(corpo, `Descartar estas falhas de ${b.closest("tr").querySelector("b").textContent}?`);

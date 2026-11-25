@@ -106,6 +106,24 @@ with SessionLocal() as s:
     res = routers.resumo_painel(s)
 check(res["falhas"]["total"] == 0, "descartadas nao contam no card Falhas")
 
+# ---------- tarefa 'refazer' fechada por tentativa ANTIGA nao fica presa ----------
+with SessionLocal() as s:
+    s.query(Documento).filter(Documento.status_download == DownloadStatus.DESCARTADO).update(
+        {"status_download": DownloadStatus.FAILED}, synchronize_session=False)
+    s.commit()
+    r2 = routers.refazer(routers.FalhasAcao(incluir_permanentes=True), s)
+job2 = uuid.UUID(r2["job_id"])
+with SessionLocal() as s:
+    pend_docs = s.query(Documento).filter(Documento.job_id == job2,
+                                          Documento.status_download == DownloadStatus.PENDING).all()
+    antigo = job.id  # a tentativa velha carrega o job ANTIGO no payload
+    for dd in pend_docs:
+        tasks._fecha_documento(s, dd.id, antigo, status_download=DownloadStatus.SUCCESS)
+with SessionLocal() as s:
+    st2 = s.get(ScrapingJob, job2).status
+check(r2["refeitos"] == 3 and st2 == JobStatus.COMPLETED,
+      f"itens fechados por tentativa antiga: a tarefa nova conclui ({st2.value})")
+
 # ---------- versao nova ----------
 routers._CACHE_CURTO.clear()
 routers._ultima_versao = lambda: {"ultima": "9.0.0", "url": "https://x/releases/v9.0.0", "publicada_em": None}
