@@ -1,7 +1,7 @@
 @echo off
-title Painel do Scraper (servidor Xavier)
+title Painel do Coletor de Dados Publicos (servidor Xavier)
 echo ==========================================================
-echo   Painel do Scraper - rodando no SERVIDOR (Xavier)
+echo   Painel do Coletor de Dados Publicos - rodando no SERVIDOR (Xavier)
 echo ==========================================================
 echo.
 echo  O navegador abre sozinho em alguns segundos:
