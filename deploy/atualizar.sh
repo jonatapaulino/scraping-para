@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Atualiza o Scraper Gov-PA para uma versao publicada (Releases do GitHub).
+# Atualiza o Coletor de Dados Publicos para uma versao publicada (Releases do GitHub).
 #
 #   ./deploy/atualizar.sh            # ultima versao publicada
 #   ./deploy/atualizar.sh 1.4.2      # versao especifica (tambem serve para voltar atras)

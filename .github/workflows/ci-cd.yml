@@ -1,4 +1,4 @@
-# CI/CD do Scraper Gov-PA
+# CI/CD do Coletor de Dados Públicos
 #
 #  Pull request  -> qualidade + mensagens de commit + testes + montagem da imagem (sem publicar)
 #  Merge na main -> qualidade + testes -> semantic-release (versao pelos commits, tag vX.Y.Z,

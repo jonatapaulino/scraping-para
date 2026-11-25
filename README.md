@@ -1,4 +1,6 @@
-# Scraper Gov-PA
+# Coletor de Dados Públicos
+
+> **Projeto independente e não oficial.** Não tem vínculo com o Governo do Estado do Pará nem com nenhum órgão público. Ele apenas coleta dados que já são públicos (Portal da Transparência, Diário Oficial, PNCP e portais oficiais), respeitando os limites de acesso.
 
 [![CI/CD](https://github.com/jonatapaulino/scraping-para/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/jonatapaulino/scraping-para/actions/workflows/ci-cd.yml) [![Release](https://img.shields.io/github/v/release/jonatapaulino/scraping-para?label=vers%C3%A3o)](https://github.com/jonatapaulino/scraping-para/releases)
 
