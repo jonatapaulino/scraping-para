@@ -1,6 +1,6 @@
 # Guia de uso
 
-Tudo é feito pelo painel: **http://localhost:8000/ui**
+Tudo é feito pelo painel: **http://localhost:8000/ui** (abre só neste computador — veja *Abrir em outro aparelho* no fim)
 
 ## Ligar e desligar
 1. Abra o **Docker Desktop** (precisa estar aberto).
@@ -43,6 +43,8 @@ Se a tabela só aparece com JavaScript, marque *página com JavaScript*. Se o si
 ## 3. Dados abertos da Transparência
 Seção **Dados abertos**: escolha o dataset (folha, despesas, diárias…), o período e os órgãos (ou *todos*) → **Coletar**. Gera um CSV por mês/órgão. Esta seção **não tem agenda automática**: é sempre manual.
 
+Órgão que não publicou nada no período aparece como **Sem dados** (cinza) — não é erro e não entra na contagem de *Falhas*.
+
 ## A tabela Secretarias
 | Coluna | O que é |
 |---|---|
@@ -75,7 +77,8 @@ Marque a caixa da fonte e escolha o horário (Brasília). **Nada roda sozinho se
 | Tarefa com 0 PDFs | filtro de PDFs → `*` (veja seção 1) |
 | **Testar** deu erro | leia a mensagem: costuma ser URL errada, "não é JSON" (use *tabela*) ou caminho inexistente |
 | Tarefa travada | **cancelar** e rodar de novo |
-| Falhas na lista | *Fila de erros → reprocessar* |
+| Falhas na lista | *Fila de erros → reprocessar* (itens **Sem dados** não são falha: o órgão não publicou nada) |
+| Coleta: "Endereço interno bloqueado" | a URL aponta para o próprio computador/sistema — por segurança isso não é permitido |
 | Mudou o site e parou de achar PDFs | aumente a **profundidade** ou ajuste o **filtro** |
 
 ## Quando ainda precisa de ajuda técnica
@@ -84,3 +87,6 @@ Só nestes casos (não dá para resolver pelo painel):
 - API que exige um fluxo próprio (vários passos) — vira código novo;
 - ajustes globais no `.env` (proxy, Google Drive, limites) — exige reiniciar;
 - **mudar o código** do sistema — siga o `FLUXO-DE-MUDANCA.md`.
+
+## Abrir em outro aparelho (celular, outro PC)
+Por segurança o painel só abre neste computador. Para liberar na rede de casa/escritório: no `.env`, troque `PAINEL_BIND=127.0.0.1` por `PAINEL_BIND=0.0.0.0` e rode `iniciar.bat` de novo. O painel **não tem senha** — não faça isso em rede pública (café, hotel). O banco e o armazenamento continuam fechados.

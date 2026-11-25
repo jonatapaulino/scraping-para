@@ -1,6 +1,7 @@
 import logging
 import os
 import tempfile
+import time
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from starlette.background import BackgroundTask
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import paginate
 from minio.error import S3Error
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -47,6 +48,22 @@ router = APIRouter(prefix="/api/v1")
 def get_session():
     with SessionLocal() as s:
         yield s
+
+
+_CACHE_CURTO: dict = {}
+
+
+def _cache_curto(chave, ttl: float, fn):
+    """Reaproveita o resultado por `ttl` segundos. O painel consulta a cada 5s
+    (e cada aba aberta multiplica): sem isso cada consulta abria uma conexao
+    nova no RabbitMQ e listava todos os PDFs do Diario no MinIO."""
+    agora = time.monotonic()
+    hit = _CACHE_CURTO.get(chave)
+    if hit and agora - hit[0] < ttl:
+        return hit[1]
+    valor = fn()
+    _CACHE_CURTO[chave] = (agora, valor)
+    return valor
 
 
 # fontes "virtuais" da tela inicial que disparam um dataset (nao um crawl)
@@ -110,6 +127,7 @@ def job_status(job_id: uuid.UUID, s: Session = Depends(get_session)):
         pdfs_descobertos=job.total_pdfs_encontrados,
         pdfs_baixados_sucesso=counts.get(DownloadStatus.SUCCESS, 0),
         pdfs_falhas=counts.get(DownloadStatus.FAILED, 0),
+        sem_dados=counts.get(DownloadStatus.SEM_DADOS, 0),
     )
 
 
@@ -125,12 +143,26 @@ def cancel_job(job_id: uuid.UUID, s: Session = Depends(get_session)):
         raise HTTPException(409, f"Job nao esta em andamento ({job.status.value})")
     job.status = JobStatus.CANCELLED
     job.completed_at = datetime.now(timezone.utc)
+    # Pendentes que JA tinham arquivo (re-coleta forcada) voltam a SUCCESS —
+    # antes eram apagados e o historico do arquivo ja baixado se perdia.
+    restaurados = s.execute(
+        update(Documento)
+        .where(
+            Documento.job_id == job_id,
+            Documento.status_download == DownloadStatus.PENDING,
+            Documento.minio_path.is_not(None),
+        )
+        .values(status_download=DownloadStatus.SUCCESS)
+    ).rowcount
+    # os nunca baixados saem, para uma nova execucao redescobri-los (dedup por URL)
     removidos = s.execute(
         delete(Documento).where(
             Documento.job_id == job_id, Documento.status_download == DownloadStatus.PENDING
         )
     ).rowcount
     s.commit()
+    if restaurados:
+        log.info("Cancelamento do job %s: %d documentos ja baixados mantidos", job_id, restaurados)
     return {"job_id": job_id, "status": job.status, "pendentes_removidos": removidos}
 
 
@@ -208,6 +240,7 @@ def list_jobs(limit: int = 20, s: Session = Depends(get_session)):
             pdfs_descobertos=j.total_pdfs_encontrados,
             pdfs_baixados_sucesso=counts.get(j.id, {}).get(DownloadStatus.SUCCESS, 0),
             pdfs_falhas=counts.get(j.id, {}).get(DownloadStatus.FAILED, 0),
+            sem_dados=counts.get(j.id, {}).get(DownloadStatus.SEM_DADOS, 0),
             started_at=j.started_at,
             completed_at=j.completed_at,
         )
@@ -249,7 +282,7 @@ def overview(s: Session = Depends(get_session)):
         ).scalar_one(),
     }
     return OverviewOut(
-        queues=broker.queue_depths(),
+        queues=_cache_curto("filas", 10, broker.queue_depths),
         documents={k.value: v for k, v in docs.items()},
         jobs={k.value: v for k, v in jobs.items()},
         secretarias_ativas=ativas,
@@ -343,9 +376,17 @@ def _erro_legivel(exc: Exception) -> str:
     return str(exc)
 
 
+def _destino_ok(cfg: coleta.ColetaConfig) -> None:
+    try:
+        coleta.checa_destino(cfg.url.replace("{page}", str(cfg.pagina_inicial)))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @router.post("/coletas", response_model=SecretariaOut, status_code=status.HTTP_201_CREATED)
 def create_coleta(req: ColetaIn, s: Session = Depends(get_session)):
     cfg = coleta.ColetaConfig(**req.model_dump(exclude={"sigla", "is_ativa"}))
+    _destino_ok(cfg)
     sec = Secretaria(
         sigla=req.sigla.strip().upper(), url_base=cfg.url[:255], is_ativa=req.is_ativa,
         tipo="coleta", coleta_json=cfg.model_dump_json(),
@@ -365,6 +406,7 @@ def update_coleta(sec_id: uuid.UUID, cfg: coleta.ColetaConfig, s: Session = Depe
     sec = s.get(Secretaria, sec_id)
     if sec is None or sec.tipo != "coleta":
         raise HTTPException(404, "Fonte de coleta nao encontrada")
+    _destino_ok(cfg)
     sec.url_base = cfg.url[:255]
     sec.coleta_json = cfg.model_dump_json()
     s.commit()
@@ -394,7 +436,17 @@ def delete_secretaria(sec_id: uuid.UUID, s: Session = Depends(get_session)):
     s.execute(delete(CrawledPage).where(CrawledPage.job_id.in_(job_ids)))
     s.execute(delete(ScrapingJob).where(ScrapingJob.secretaria_id == sec_id))
     s.delete(sec)
-    s.commit()
+    try:
+        s.commit()
+    except IntegrityError:
+        # documento de OUTRA fonte ainda aponta pra uma tarefa desta (re-coleta
+        # forcada da mesma URL) — antes virava erro 500 sem explicacao
+        s.rollback()
+        raise HTTPException(
+            409,
+            f"Nao foi possivel excluir {sec.sigla}: ha documentos de outra fonte "
+            "ligados as tarefas dela. Desative a fonte em vez de excluir.",
+        )
     return {"excluida": sec.sigla, "documentos_removidos": n_docs}
 
 
@@ -525,14 +577,19 @@ def _dados_diario(s: Session, anos_filtro: Optional[list] = None):
     from app import datasets
 
     prefixo = "IOEPA/diario_oficial/documentos/"
-    contagem: dict[int, int] = {}
-    try:
+
+    def _conta() -> dict[int, int]:
+        out: dict[int, int] = {}
         for obj in storage.client().list_objects(
             config.MINIO_BUCKET, prefix=prefixo, recursive=True
         ):
             partes = obj.object_name[len(prefixo):].split("/")
             if len(partes) >= 2 and partes[0].isdigit():
-                contagem[int(partes[0])] = contagem.get(int(partes[0]), 0) + 1
+                out[int(partes[0])] = out.get(int(partes[0]), 0) + 1
+        return out
+
+    try:
+        contagem = _cache_curto("diario:contagem", 20, _conta)
     except S3Error:
         log.exception("Falha ao listar o diario no MinIO")
         raise HTTPException(502, "MinIO indisponivel no momento")
@@ -620,8 +677,9 @@ def progresso_tarefas(s: Session = Depends(get_session)):
         )
         ok = cont.get(DownloadStatus.SUCCESS, 0)
         falhas = cont.get(DownloadStatus.FAILED, 0)
+        sem_dados = cont.get(DownloadStatus.SEM_DADOS, 0)
         total = max(job.total_pdfs_encontrados or 0, sum(cont.values()))
-        feitos = ok + falhas
+        feitos = ok + falhas + sem_dados
         rodando = job.status == JobStatus.RUNNING
         t = {
             "job_id": str(job.id),
@@ -629,6 +687,7 @@ def progresso_tarefas(s: Session = Depends(get_session)):
             "tipo": job.tipo,
             "concluidos": feitos,
             "falhas": falhas,
+            "sem_dados": sem_dados,
             "total": total,
             "detalhes": [],
             "iniciada_em": job.started_at.isoformat() if job.started_at else None,
@@ -648,7 +707,11 @@ def progresso_tarefas(s: Session = Depends(get_session)):
             t["percentual"] = 100 if feitos else None
             t["texto"] = (
                 "coletando…" if rodando
-                else ("arquivo gerado (ou idêntico ao anterior)" if ok else "falhou ou sem registros")
+                else (
+                    "arquivo gerado (ou idêntico ao anterior)" if ok
+                    else "o site respondeu sem nenhum registro" if sem_dados
+                    else "falhou"
+                )
             )
         else:
             urls = s.execute(

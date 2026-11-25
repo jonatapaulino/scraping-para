@@ -17,14 +17,14 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 _ADDITIVE_COLUMNS = {
     "secretaria": [
         ("max_depth", "INTEGER"),
-        ("tipo", "VARCHAR(10) DEFAULT 'crawl'"),
+        ("tipo", "VARCHAR(32) DEFAULT 'crawl'"),
         ("pdf_filtro", "VARCHAR(255)"),
         ("coleta_json", "TEXT"),
         ("agendada", "BOOLEAN DEFAULT FALSE"),
         ("agenda_hora", "VARCHAR(5) DEFAULT '06:00'"),
         ("agendada_em", "TIMESTAMP WITH TIME ZONE"),
     ],
-    "scraping_job": [("tipo", "VARCHAR(10) DEFAULT 'crawl'")],
+    "scraping_job": [("tipo", "VARCHAR(32) DEFAULT 'crawl'")],
     "documento": [("downloaded_at", "TIMESTAMP WITH TIME ZONE")],
 }
 
@@ -56,14 +56,38 @@ def _migrate() -> None:
                 if cols and name not in cols:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
                     log.info("Coluna %s.%s adicionada", table, name)
+        # bancos antigos criaram 'tipo' como VARCHAR(10) — nomes de dataset
+        # como 'transf_voluntarias' (18) nao cabiam
+        for table in ("secretaria", "scraping_job"):
+            tam = conn.execute(
+                text(
+                    "SELECT character_maximum_length FROM information_schema.columns "
+                    "WHERE table_name = :t AND column_name = 'tipo'"
+                ),
+                {"t": table},
+            ).scalar_one_or_none()
+            if tam is not None and tam < 32:
+                conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN tipo TYPE VARCHAR(32)"))
+                log.info("Coluna %s.tipo ampliada para VARCHAR(32)", table)
+        # minio_path era VARCHAR(255): caminhos longos derrubavam o download
+        tipo_mp = conn.execute(
+            text(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = 'documento' AND column_name = 'minio_path'"
+            )
+        ).scalar_one_or_none()
+        if tipo_mp and tipo_mp != "text":
+            conn.execute(text("ALTER TABLE documento ALTER COLUMN minio_path TYPE TEXT"))
+            log.info("Coluna documento.minio_path ampliada para TEXT")
     models.Base.metadata.create_all(engine)
-    # Valor novo no enum nativo do Postgres (create_all nao altera tipos existentes).
-    # ADD VALUE nao roda dentro de transacao em versoes antigas -> AUTOCOMMIT.
-    try:
-        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-            conn.execute(text("ALTER TYPE jobstatus ADD VALUE IF NOT EXISTS 'CANCELLED'"))
-    except Exception:
-        log.exception("Nao foi possivel adicionar CANCELLED ao enum jobstatus")
+    # Valores novos nos enums nativos do Postgres (create_all nao altera tipos
+    # existentes). ADD VALUE nao roda dentro de transacao em versoes antigas -> AUTOCOMMIT.
+    for tipo, valor in (("jobstatus", "CANCELLED"), ("downloadstatus", "SEM_DADOS")):
+        try:
+            with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.execute(text(f"ALTER TYPE {tipo} ADD VALUE IF NOT EXISTS '{valor}'"))
+        except Exception:
+            log.exception("Nao foi possivel adicionar %s ao enum %s", valor, tipo)
 
 
 def init_db(attempts: int = 30, delay: float = 2.0) -> None:

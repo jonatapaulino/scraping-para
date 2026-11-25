@@ -45,6 +45,7 @@ class JobStatusOut(BaseModel):
     pdfs_descobertos: int
     pdfs_baixados_sucesso: int
     pdfs_falhas: int
+    sem_dados: int = 0  # unidades sem registros publicados (nao e falha)
 
 
 class JobListOut(BaseModel):
@@ -55,6 +56,7 @@ class JobListOut(BaseModel):
     pdfs_descobertos: int
     pdfs_baixados_sucesso: int
     pdfs_falhas: int
+    sem_dados: int = 0
     started_at: datetime
     completed_at: Optional[datetime]
 

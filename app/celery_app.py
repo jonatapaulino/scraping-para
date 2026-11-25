@@ -31,18 +31,29 @@ celery.conf.update(
                 "x-dead-letter-exchange": config.DLX_EXCHANGE,
             },
         ),
+        Queue(
+            config.Q_CONTROL,
+            Exchange(config.EXCHANGE, type="direct"),
+            routing_key=config.Q_CONTROL,
+            durable=True,
+        ),
     ),
     task_routes={
         "app.tasks.discover_page": {"queue": config.Q_DISCOVERY},
         "app.tasks.download_document": {"queue": config.Q_DOWNLOAD},
-        "app.tasks.dispatch_scheduled": {"queue": config.Q_DISCOVERY},
-        "app.tasks.reconcile_stalled": {"queue": config.Q_DISCOVERY},
         "app.tasks.discover_dataset": {"queue": config.Q_DISCOVERY},
         "app.tasks.fetch_dataset_mes": {"queue": config.Q_DOWNLOAD},
-        "app.tasks.dispatch_datasets_scheduled": {"queue": config.Q_DISCOVERY},
         "app.tasks.coletar_fonte": {"queue": config.Q_DOWNLOAD},
-        "app.tasks.dispatch_agendadas": {"queue": config.Q_DISCOVERY},
+        # controle (worker-control, 1 processo: as agendas nunca rodam em paralelo
+        # e nao disparam a mesma fonte duas vezes)
+        "app.tasks.dispatch_scheduled": {"queue": config.Q_CONTROL},
+        "app.tasks.reconcile_stalled": {"queue": config.Q_CONTROL},
+        "app.tasks.dispatch_datasets_scheduled": {"queue": config.Q_CONTROL},
+        "app.tasks.dispatch_agendadas": {"queue": config.Q_CONTROL},
     },
+    # sem backend de resultados: sem isso o Beat agenda 'celery.backend_cleanup'
+    # na fila padrao 'celery', que nenhum worker consome (mensagem fica presa)
+    result_expires=None,
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
@@ -82,10 +93,13 @@ def _beat_schedule() -> dict:
                     "schedule": c,
                     "args": (grupo,),
                 }
-    # agendas por fonte (painel): confere a cada 5 min quem ja esta na hora
+    # agendas por fonte (painel): confere a cada 5 min quem ja esta na hora.
+    # expires: se o worker de controle ficou fora do ar, as conferencias velhas
+    # acumuladas na fila sao descartadas (a proxima ja cobre o atraso)
     schedule["dispatch-agendadas"] = {
         "task": "app.tasks.dispatch_agendadas",
         "schedule": crontab(minute="*/5"),
+        "options": {"expires": 280},
     }
     reconcile = _cron(config.RECONCILE_CRON)
     if reconcile:

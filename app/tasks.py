@@ -26,7 +26,7 @@ from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from app import broker, coleta, config, drive, http_client, storage, transparencia
 from app.celery_app import celery
-from app.database import SessionLocal
+from app.database import SessionLocal, init_db
 from app.models import (
     CrawledPage,
     DeadLetter,
@@ -69,6 +69,9 @@ DEAD_REQUEUEABLE = (
 
 @worker_ready.connect
 def _on_worker_ready(**_kwargs):
+    # migracoes idempotentes tambem no worker: num rebuild ele pode subir antes
+    # da API e gravar um valor novo (ex.: SEM_DADOS) que o banco ainda nao tem
+    init_db(attempts=10, delay=3)
     storage.ensure_bucket(attempts=5, delay=3)
     conn = broker._connect()
     try:
@@ -97,7 +100,13 @@ def finish_task_unit(session, job_id: uuid.UUID | None) -> None:
         .where(JobPending.job_id == job_id)
         .values(pending=JobPending.pending - 1)
         .returning(JobPending.pending)
-    ).scalar_one()
+    ).scalar_one_or_none()
+    if remaining is None:
+        # job excluido enquanto a task estava na fila: nada a descontar (antes
+        # dava 'No row was found' e a task ia para a fila de erros)
+        log.info("Job %s nao existe mais — unidade ignorada", job_id)
+        session.commit()
+        return
     if remaining <= 0:
         session.execute(
             update(ScrapingJob)
@@ -105,6 +114,24 @@ def finish_task_unit(session, job_id: uuid.UUID | None) -> None:
             .values(status=JobStatus.COMPLETED, completed_at=datetime.now(timezone.utc))
         )
     session.commit()
+
+
+def _fecha_documento(session, documento_id: uuid.UUID, job_id: uuid.UUID | None, **values) -> None:
+    """Grava o resultado final do documento e desconta a pendencia do job SO se
+    ele ainda estava PENDING. Idempotente: reentrega da mensagem, reprocesso da
+    fila de erros ou o reconciliador nao descontam o mesmo item duas vezes (antes
+    o contador ficava negativo e o job aparecia concluido com trabalho rodando).
+    O resultado e gravado mesmo se o reconciliador ja tinha marcado FAILED."""
+    anterior = session.execute(
+        select(Documento.status_download)
+        .where(Documento.id == documento_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    session.execute(update(Documento).where(Documento.id == documento_id).values(**values))
+    if anterior == DownloadStatus.PENDING:
+        finish_task_unit(session, job_id)  # faz o commit
+    else:
+        session.commit()
 
 
 def _job_cancelado(job_id: uuid.UUID) -> bool:
@@ -216,13 +243,12 @@ class DeadLetterTask(Task):
         try:
             with SessionLocal() as s:
                 if doc_id:
-                    s.execute(
-                        update(Documento)
-                        .where(Documento.id == uuid.UUID(doc_id))
-                        .values(status_download=DownloadStatus.FAILED)
+                    _fecha_documento(
+                        s, uuid.UUID(doc_id), job_id,
+                        status_download=DownloadStatus.FAILED,
                     )
-                if job_id:
-                    finish_task_unit(s, job_id)
+                elif job_id:
+                    finish_task_unit(s, job_id)  # unidade de pagina (sem documento)
         except Exception:
             log.exception("Falha ao fechar unidade morta (job=%s doc=%s)", job_id, doc_id)
 
@@ -320,18 +346,35 @@ def _filename_from_url(url: str) -> str:
     return f"doc-{hashlib.sha256(url.encode()).hexdigest()[:8]}.pdf"
 
 
-def _minio_path(sigla: str, url: str) -> str:
-    parsed = urlparse(url)
-    filename = _filename_from_url(url)
-    year = "unknown"
-    for part in parsed.path.split("/"):
-        if part.isdigit() and len(part) == 4:
-            year = part
-            break
-    if year == "unknown":
-        m = re.search(r"20\d{2}", filename)
+# Pasta de ano no path: '2024', '2023-01' (Drupal), '2023_05', '2024.03.15'
+_ANO_PASTA_RE = re.compile(r"^((?:19|20)\d{2})(?:[-_.]\d{1,2}){0,2}$")
+_ANO_NOME_RE = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
+
+
+def _ano_do_documento(url: str, filename: str) -> str:
+    for part in urlparse(url).path.split("/"):
+        m = _ANO_PASTA_RE.match(unquote(part))
         if m:
-            year = m.group(0)
+            return m.group(1)
+    m = _ANO_NOME_RE.search(filename)
+    return m.group(1) if m else "unknown"
+
+
+def _minio_path(sigla: str, url: str) -> str:
+    """bucket/<sigla>/<ano>/<nome>__<tag>.pdf — a tag (hash da URL) garante um
+    caminho por URL: dois PDFs com o mesmo nome no mesmo ano (ex.: relatorio
+    mensal de nome fixo) nao se sobrescrevem mais. Deterministico: a mesma URL
+    sempre cai no mesmo caminho (retries e workers paralelos nao colidem)."""
+    filename = _filename_from_url(url)
+    year = _ano_do_documento(url, filename)
+    if not filename.startswith("doc-"):  # fallback ja e derivado do hash da URL
+        stem, ext = os.path.splitext(filename)
+        # nome curto: ha portais com nome de arquivo de 300+ caracteres (o
+        # banco recusava e o Windows tem limite de ~260 no caminho inteiro).
+        # A tag mantem o nome unico mesmo cortado.
+        stem = stem[:100].rstrip("._-") or "doc"
+        tag = hashlib.sha256(url.encode()).hexdigest()[:8]
+        filename = f"{stem}__{tag}{ext or '.pdf'}"
     return f"{config.MINIO_BUCKET}/{sigla.lower()}/{year}/{filename}"
 
 
@@ -409,6 +452,69 @@ def _stream_to_tmp(client: httpx.Client, url: str, tmp, sha) -> tuple[int, bytes
     return size, first, truncated
 
 
+class _Cancelado(Exception):
+    """O usuario cancelou o job no meio de uma coleta longa."""
+
+
+def _linhas_para_csv(linhas, tmp, job_id: uuid.UUID) -> tuple[int, int]:
+    """Grava `linhas` (dicts) como CSV UTF-8 com BOM no arquivo binario `tmp`.
+
+    As colunas sao a UNIAO de todas as linhas, na ordem em que aparecem (um
+    campo que so surge na linha 5.000 nao e mais descartado). Como o
+    cabecalho so e conhecido no fim, as linhas passam antes por um arquivo
+    temporario (uma linha JSON cada). Cancelamento checado a cada 2000 linhas.
+    Devolve (total_de_linhas, total_de_colunas)."""
+    colunas: list[str] = []
+    conhecidas: set[str] = set()
+    total = 0
+    with tempfile.TemporaryFile("w+", encoding="utf-8") as brutas:
+        for linha in linhas:
+            brutas.write(json.dumps(linha, ensure_ascii=False, default=str) + "\n")
+            total += 1
+            for k in linha:
+                if k not in conhecidas:
+                    conhecidas.add(k)
+                    colunas.append(k)
+            if total % 2000 == 0 and _job_cancelado(job_id):
+                raise _Cancelado()
+        if total == 0:
+            return 0, 0
+        brutas.seek(0)
+        texto = io.TextIOWrapper(tmp, encoding="utf-8-sig", newline="", write_through=True)
+        w = csv.DictWriter(texto, fieldnames=colunas, restval="")
+        w.writeheader()
+        for ln in brutas:
+            w.writerow(json.loads(ln))
+        texto.flush()
+        texto.detach()  # solta o wrapper sem fechar `tmp`
+    return total, len(colunas)
+
+
+def _sha_e_tamanho(tmp) -> tuple[str, int]:
+    tmp.seek(0)
+    sha = hashlib.sha256()
+    for chunk in iter(lambda: tmp.read(256 * 1024), b""):
+        sha.update(chunk)
+    size = tmp.tell()
+    tmp.seek(0)
+    return sha.hexdigest(), size
+
+
+def _publica_arquivo(tmp, path: str, size: int, content_type: str) -> None:
+    """Grava no MinIO (obrigatorio) + downloads/ e Drive (best-effort)."""
+    key = path.split("/", 1)[1]
+    tmp.seek(0)
+    storage.ensure_bucket().put_object(
+        config.MINIO_BUCKET, key, tmp, length=size, content_type=content_type,
+    )
+    if config.LOCAL_EXPORT_DIR:
+        try:
+            _export_local(tmp, path)
+        except OSError:
+            log.exception("Falha ao exportar %s para o host", path)
+    drive.upload_file(tmp, key, content_type)
+
+
 # ---------- tasks ----------
 
 
@@ -464,10 +570,13 @@ def discover_page(self, payload: dict):
                 .returning(Documento.id)
             ).scalar_one_or_none()
             if doc_id is None and force:
+                # created_at = agora: senao o reconciliador ve o doc re-enfileirado
+                # como orfao antigo (>DOC_ORPHAN_HOURS) e o mata no meio da fila
                 doc_id = s.execute(
                     update(Documento)
                     .where(Documento.url_origem == doc_url)
-                    .values(job_id=job_id, status_download=DownloadStatus.PENDING)
+                    .values(job_id=job_id, status_download=DownloadStatus.PENDING,
+                            created_at=func.now())
                     .returning(Documento.id)
                 ).scalar_one_or_none()
             if doc_id is None:
@@ -543,11 +652,17 @@ def download_document(self, payload: dict):
             finish_task_unit(s, job_id)
             return
         if doc.status_download == DownloadStatus.SUCCESS:
+            # reentrega de uma task que ja concluiu: a pendencia ja foi descontada
             log.info("Documento ja baixado: %s", url)
-            finish_task_unit(s, job_id)
             return
         sec = s.get(Secretaria, doc.secretaria_id)
         base_url = sec.url_base if sec else None
+        sigla = sec.sigla if sec else "unknown"
+        doc_secretaria_id = doc.secretaria_id
+        # re-download (force) de um doc que ja gravou o proprio arquivo: mantem o
+        # caminho. Docs dedup (hash NULL) apontam pro arquivo de OUTRO doc — nao
+        # podem reusar o caminho, senao sobrescreveriam o arquivo alheio.
+        caminho_proprio = doc.minio_path if doc.hash_sha256 else None
 
     sha = hashlib.sha256()
     size = 0
@@ -572,23 +687,18 @@ def download_document(self, payload: dict):
             code = exc.response.status_code
             if 400 <= code < 500 and code not in (408, 429):
                 with SessionLocal() as s:
-                    s.execute(
-                        update(Documento)
-                        .where(Documento.id == documento_id)
-                        .values(status_download=DownloadStatus.FAILED)
+                    _fecha_documento(
+                        s, documento_id, job_id, status_download=DownloadStatus.FAILED
                     )
-                    finish_task_unit(s, job_id)
                 log.warning("Download %d terminal (link quebrado): %s", code, url)
                 return
             raise
         if truncated_magic or len(first) < len(PDF_MAGIC):
             with SessionLocal() as s:
-                s.execute(
-                    update(Documento)
-                    .where(Documento.id == documento_id)
-                    .values(magic_byte_valido=False, status_download=DownloadStatus.FAILED)
+                _fecha_documento(
+                    s, documento_id, job_id,
+                    magic_byte_valido=False, status_download=DownloadStatus.FAILED,
                 )
-                finish_task_unit(s, job_id)
             log.warning("Magic bytes invalidos (nao-PDF): %s", url)
             return
 
@@ -602,31 +712,23 @@ def download_document(self, payload: dict):
                     Documento.hash_sha256 == digest, Documento.id != documento_id
                 )
             ).scalar_one_or_none()
-            if dupe:
-                s.execute(
-                    update(Documento)
-                    .where(Documento.id == documento_id)
-                    .values(
-                        magic_byte_valido=True,
-                        minio_path=dupe.minio_path,
-                        tamanho_bytes=size,
-                        status_download=DownloadStatus.SUCCESS,
-                        downloaded_at=datetime.now(timezone.utc),
-                    )
+            if dupe and dupe.secretaria_id == doc_secretaria_id:
+                _fecha_documento(
+                    s, documento_id, job_id,
+                    magic_byte_valido=True,
+                    minio_path=dupe.minio_path,
+                    tamanho_bytes=size,
+                    status_download=DownloadStatus.SUCCESS,
+                    downloaded_at=datetime.now(timezone.utc),
                 )
-                finish_task_unit(s, job_id)
                 log.info("Binario duplicado de %s — reusa %s", url, dupe.minio_path)
                 return
+        # Mesmo binario ja existe em OUTRA fonte: grava copia propria na pasta
+        # desta fonte (senao a pasta dela fica sem o arquivo). hash_sha256 e
+        # UNIQUE global, entao a copia fica sem hash (o dono do hash e o outro).
+        guarda_hash = dupe is None
 
-        sigla = None
-        with SessionLocal() as s:
-            row = s.execute(
-                select(Secretaria.sigla)
-                .join(Documento, Documento.secretaria_id == Secretaria.id)
-                .where(Documento.id == documento_id)
-            ).scalar_one_or_none()
-            sigla = row or "unknown"
-        path = _minio_path(sigla, url)
+        path = caminho_proprio or _minio_path(sigla, url)
 
         minio = storage.ensure_bucket()
         minio.put_object(
@@ -646,19 +748,15 @@ def download_document(self, payload: dict):
 
         with SessionLocal() as s:
             try:
-                s.execute(
-                    update(Documento)
-                    .where(Documento.id == documento_id)
-                    .values(
-                        hash_sha256=digest,
-                        minio_path=path,
-                        tamanho_bytes=size,
-                        magic_byte_valido=True,
-                        status_download=DownloadStatus.SUCCESS,
-                        downloaded_at=datetime.now(timezone.utc),
-                    )
+                _fecha_documento(
+                    s, documento_id, job_id,
+                    hash_sha256=digest if guarda_hash else None,
+                    minio_path=path,
+                    tamanho_bytes=size,
+                    magic_byte_valido=True,
+                    status_download=DownloadStatus.SUCCESS,
+                    downloaded_at=datetime.now(timezone.utc),
                 )
-                finish_task_unit(s, job_id)
             except IntegrityError:
                 # Outro worker gravou o mesmo binario primeiro (UNIQUE hash_sha256):
                 # vira dedup em vez de morrer na DLX.
@@ -670,22 +768,29 @@ def download_document(self, payload: dict):
                 ).scalar_one_or_none()
                 if dupe is None:
                     raise
-                s.execute(
-                    update(Documento)
-                    .where(Documento.id == documento_id)
-                    .values(
-                        magic_byte_valido=True,
-                        minio_path=dupe.minio_path,
-                        tamanho_bytes=size,
+                if dupe.secretaria_id != doc_secretaria_id:
+                    # vencedor e de outra fonte: mantem a copia propria, sem hash
+                    _fecha_documento(
+                        s, documento_id, job_id,
+                        minio_path=path, tamanho_bytes=size, magic_byte_valido=True,
                         status_download=DownloadStatus.SUCCESS,
                         downloaded_at=datetime.now(timezone.utc),
                     )
+                    log.info("Download ok %s (copia; hash pertence a outra fonte)", url)
+                    return
+                _fecha_documento(
+                    s, documento_id, job_id,
+                    magic_byte_valido=True,
+                    minio_path=dupe.minio_path,
+                    tamanho_bytes=size,
+                    status_download=DownloadStatus.SUCCESS,
+                    downloaded_at=datetime.now(timezone.utc),
                 )
-                finish_task_unit(s, job_id)
-                try:
-                    minio.remove_object(config.MINIO_BUCKET, path.split("/", 1)[1])
-                except S3Error:
-                    log.warning("Objeto orfao nao removido: %s", path)
+                if path != dupe.minio_path:
+                    try:
+                        minio.remove_object(config.MINIO_BUCKET, path.split("/", 1)[1])
+                    except S3Error:
+                        log.warning("Objeto orfao nao removido: %s", path)
                 log.info("Upload duplicado descartado — reusa %s", dupe.minio_path)
                 return
         log.info("Download ok %s (%d bytes) -> s3://%s", url, size, path)
@@ -850,22 +955,48 @@ def reconcile_stalled():
             .limit(500)
         ).all()
         for doc_id, job_id in rows:
-            s.execute(
+            # condicional: se a task real fechou o doc nesse meio-tempo, nao
+            # desconta de novo (evita contador negativo)
+            fechado = s.execute(
                 update(Documento)
-                .where(Documento.id == doc_id)
+                .where(Documento.id == doc_id, Documento.status_download == DownloadStatus.PENDING)
                 .values(status_download=DownloadStatus.FAILED)
-            )
+                .returning(Documento.id)
+            ).scalar_one_or_none()
+            if fechado is None:
+                s.commit()
+                continue
             finish_task_unit(s, job_id)
             orphans += 1
 
     with SessionLocal() as s:
+        # Zumbi = RUNNING ha mais de JOB_STALL_HOURS E sem NENHUMA atividade
+        # nesse periodo (documento criado/baixado, pagina navegada). Antes a
+        # idade bastava, e coletas longas legitimas (ex.: Diario Oficial desde
+        # 2008) eram marcadas FAILED no meio do trabalho.
+        doc_recente = (
+            select(Documento.id)
+            .where(
+                Documento.job_id == ScrapingJob.id,
+                (Documento.created_at >= job_cutoff) | (Documento.downloaded_at >= job_cutoff),
+            )
+            .exists()
+        )
+        pagina_recente = (
+            select(CrawledPage.url_hash)
+            .where(CrawledPage.job_id == ScrapingJob.id, CrawledPage.crawled_at >= job_cutoff)
+            .exists()
+        )
         stalled = s.execute(
             update(ScrapingJob)
             .where(
                 ScrapingJob.status == JobStatus.RUNNING,
                 ScrapingJob.started_at < job_cutoff,
+                ~doc_recente,
+                ~pagina_recente,
             )
             .values(status=JobStatus.FAILED, completed_at=now)
+            .execution_options(synchronize_session=False)
         ).rowcount
         s.commit()
 
@@ -1022,10 +1153,12 @@ def discover_dataset(self, payload: dict):
                 .returning(Documento.id)
             ).scalar_one_or_none()
             if doc_id is None and force:
+                # created_at = agora (ver discover_page): evita o reconciliador
                 doc_id = s.execute(
                     update(Documento)
                     .where(Documento.url_origem == url)
-                    .values(job_id=job_id, status_download=DownloadStatus.PENDING)
+                    .values(job_id=job_id, status_download=DownloadStatus.PENDING,
+                            created_at=func.now())
                     .returning(Documento.id)
                 ).scalar_one_or_none()
             if doc_id is None:
@@ -1092,6 +1225,10 @@ def fetch_dataset_mes(self, payload: dict):
     if spec.iter_docs:
         n_ok, seen = 0, {}
         for d in spec.iter_docs(recorte, siglas):
+            # loop longo (centenas de PDFs, horas): cancelar no painel para aqui
+            if _job_cancelado(job_id):
+                log.info("Job %s cancelado durante os documentos de %s %s", job_id, dataset, rotulo)
+                return
             # ate 3 tentativas: o servidor as vezes fecha a conexao no meio
             # do PDF; sem retry o doc ficava faltando e o progresso em 99,9%.
             for tentativa in range(1, 4):
@@ -1110,71 +1247,31 @@ def fetch_dataset_mes(self, payload: dict):
 
     with SessionLocal() as s:
         doc = s.get(Documento, documento_id)
-        if doc is None or doc.status_download == DownloadStatus.SUCCESS:
+        if doc is None:
             finish_task_unit(s, job_id)
             return
+        if doc.status_download == DownloadStatus.SUCCESS:
+            return  # reentrega de task ja concluida: pendencia ja descontada
+        hash_anterior, caminho_anterior = doc.hash_sha256, doc.minio_path
 
     def _mark(status: DownloadStatus):
         with SessionLocal() as s:
-            s.execute(
-                update(Documento)
-                .where(Documento.id == documento_id)
-                .values(status_download=status)
-            )
-            finish_task_unit(s, job_id)
+            _fecha_documento(s, documento_id, job_id, status_download=status)
 
-    total_rows = 0
     with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES) as tmp:
-        text_tmp = io.TextIOWrapper(
-            tmp, encoding="utf-8-sig", newline="", write_through=True
-        )
-        writer = None
-        for row in spec.iter_rows(recorte, siglas):
-            if writer is None:
-                writer = csv.DictWriter(
-                    text_tmp, fieldnames=list(row.keys()), extrasaction="ignore"
-                )
-                writer.writeheader()
-            writer.writerow(row)
-            total_rows += 1
-
-        if total_rows == 0:
-            _mark(DownloadStatus.FAILED)
-            log.warning("%s %s sem dados publicados", dataset, rotulo)
+        try:
+            total_rows, _ = _linhas_para_csv(spec.iter_rows(recorte, siglas), tmp, job_id)
+        except _Cancelado:
+            log.info("Job %s cancelado durante a coleta de %s %s", job_id, dataset, rotulo)
             return
 
-        text_tmp.flush()
-        tmp.seek(0)
-        sha = hashlib.sha256()
-        for chunk in iter(lambda: tmp.read(256 * 1024), b""):
-            sha.update(chunk)
-        digest = sha.hexdigest()
-        size = tmp.tell()
-        tmp.seek(0)
+        if total_rows == 0:
+            # nao e erro: o orgao simplesmente nao publicou nada no periodo
+            _mark(DownloadStatus.SEM_DADOS)
+            log.info("%s %s sem dados publicados", dataset, rotulo)
+            return
 
-        with SessionLocal() as s:
-            dupe = s.execute(
-                select(Documento).where(
-                    Documento.hash_sha256 == digest, Documento.id != documento_id
-                )
-            ).scalar_one_or_none()
-            if dupe:
-                s.execute(
-                    update(Documento)
-                    .where(Documento.id == documento_id)
-                    .values(
-                        minio_path=dupe.minio_path,
-                        tamanho_bytes=size,
-                        status_download=DownloadStatus.SUCCESS,
-                        downloaded_at=datetime.now(timezone.utc),
-                    )
-                )
-                finish_task_unit(s, job_id)
-                log.info(
-                    "%s %s identico a %s — reusa",
-                    dataset, rotulo, dupe.minio_path,
-                )
-                return
+        digest, size = _sha_e_tamanho(tmp)
 
         slug = transparencia.orgao_slug(orgao) if orgao else None
         label = slug or "todos"
@@ -1187,34 +1284,38 @@ def fetch_dataset_mes(self, payload: dict):
             f"{config.MINIO_BUCKET}/{base}/"
             f"{dataset}-{rotulo}-{label}.csv"
         )
-        minio = storage.ensure_bucket()
-        minio.put_object(
-            config.MINIO_BUCKET,
-            path.split("/", 1)[1],
-            tmp,
-            length=size,
-            content_type="text/csv",
+        fechar = dict(
+            minio_path=path, tamanho_bytes=size,
+            status_download=DownloadStatus.SUCCESS,
+            downloaded_at=datetime.now(timezone.utc),
         )
-        if config.LOCAL_EXPORT_DIR:
-            try:
-                _export_local(tmp, path)
-            except OSError:
-                log.exception("Falha ao exportar %s para o host", path)
-        drive.upload_file(tmp, path.split("/", 1)[1], "text/csv")
+        if hash_anterior == digest and caminho_anterior == path:
+            # re-coleta (force) com conteudo igual: o arquivo ja esta la
+            with SessionLocal() as s:
+                _fecha_documento(s, documento_id, job_id, hash_sha256=digest, **fechar)
+            log.info("%s %s sem mudancas desde a ultima coleta", dataset, rotulo)
+            return
+
+        # Cada unidade (dataset x periodo x orgao) tem o PROPRIO arquivo: mesmo
+        # com conteudo identico ao de outra unidade, grava na pasta dela (antes
+        # so apontava pro arquivo alheio e a pasta do orgao ficava vazia).
+        _publica_arquivo(tmp, path, size, "text/csv")
 
         with SessionLocal() as s:
-            s.execute(
-                update(Documento)
-                .where(Documento.id == documento_id)
-                .values(
-                    hash_sha256=digest,
-                    minio_path=path,
-                    tamanho_bytes=size,
-                    status_download=DownloadStatus.SUCCESS,
-                    downloaded_at=datetime.now(timezone.utc),
+            dono = s.execute(
+                select(Documento.id).where(
+                    Documento.hash_sha256 == digest, Documento.id != documento_id
                 )
-            )
-            finish_task_unit(s, job_id)
+            ).scalar_one_or_none()
+            try:
+                # hash e UNIQUE global: se outra unidade ja e dona, fica sem hash
+                _fecha_documento(
+                    s, documento_id, job_id,
+                    hash_sha256=None if dono else digest, **fechar,
+                )
+            except IntegrityError:
+                s.rollback()  # outra unidade gravou o mesmo hash agora ha pouco
+                _fecha_documento(s, documento_id, job_id, hash_sha256=None, **fechar)
         log.info(
             "%s %s ok: %d registros (%d bytes) -> s3://%s",
             dataset, rotulo, total_rows, size, path,
@@ -1282,34 +1383,33 @@ def coletar_fonte(self, payload: dict):
     agora = datetime.now(timezone.utc)
     url_origem = f"coleta://{sigla}/{job_id}"
 
+    def _registra(s, **values):
+        """Cria o documento do resultado e desconta a pendencia — so se o insert
+        aconteceu (reentrega da task nao desconta duas vezes)."""
+        novo = s.execute(
+            pg_insert(Documento)
+            .values(secretaria_id=secretaria_id, job_id=job_id, url_origem=url_origem, **values)
+            .on_conflict_do_nothing(index_elements=["url_origem"])
+            .returning(Documento.id)
+        ).scalar_one_or_none()
+        if novo is not None:
+            finish_task_unit(s, job_id)
+        else:
+            s.commit()
+
     def _falha(motivo: str):
         log.warning("Coleta %s falhou: %s", sigla, motivo)
         with SessionLocal() as s:
-            s.execute(
-                pg_insert(Documento)
-                .values(
-                    secretaria_id=secretaria_id, job_id=job_id, url_origem=url_origem,
-                    status_download=DownloadStatus.FAILED,
-                )
-                .on_conflict_do_nothing(index_elements=["url_origem"])
-            )
-            finish_task_unit(s, job_id)
+            _registra(s, status_download=DownloadStatus.FAILED)
 
-    with tempfile.TemporaryFile("w+", encoding="utf-8") as brutas:
-        colunas: list[str] = []
-        conhecidas: set[str] = set()
-        total = 0
+    with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES) as tmp:
         try:
-            for linha in coleta.buscar_linhas(cfg, pausa=config.DISCOVERY_DELAY_SECONDS):
-                brutas.write(json.dumps(linha, ensure_ascii=False, default=str) + "\n")
-                total += 1
-                for k in linha:
-                    if k not in conhecidas:
-                        conhecidas.add(k)
-                        colunas.append(k)
-                if total % 2000 == 0 and _job_cancelado(job_id):
-                    log.info("Job %s cancelado durante a coleta", job_id)
-                    return
+            total, n_colunas = _linhas_para_csv(
+                coleta.buscar_linhas(cfg, pausa=config.DISCOVERY_DELAY_SECONDS), tmp, job_id
+            )
+        except _Cancelado:
+            log.info("Job %s cancelado durante a coleta", job_id)
+            return
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
             if 400 <= code < 500 and code not in (408, 429):
@@ -1320,68 +1420,41 @@ def coletar_fonte(self, payload: dict):
                 raise
             return _falha(str(exc))
         if total == 0:
-            return _falha("nenhum registro encontrado")
-
-        brutas.seek(0)
-        with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES) as tmp:
-            texto = io.TextIOWrapper(tmp, encoding="utf-8-sig", newline="", write_through=True)
-            w = csv.DictWriter(texto, fieldnames=colunas, restval="")
-            w.writeheader()
-            for ln in brutas:
-                w.writerow(json.loads(ln))
-            texto.flush()
-            tmp.seek(0)
-            sha = hashlib.sha256()
-            for chunk in iter(lambda: tmp.read(256 * 1024), b""):
-                sha.update(chunk)
-            digest, size = sha.hexdigest(), tmp.tell()
-            tmp.seek(0)
-
+            log.info("Coleta %s: o site respondeu sem nenhum registro", sigla)
             with SessionLocal() as s:
-                dupe = s.execute(
-                    select(Documento).where(Documento.hash_sha256 == digest)
-                ).scalar_one_or_none()
-                if dupe:
-                    s.execute(
-                        pg_insert(Documento)
-                        .values(
-                            secretaria_id=secretaria_id, job_id=job_id, url_origem=url_origem,
-                            minio_path=dupe.minio_path, tamanho_bytes=size,
-                            status_download=DownloadStatus.SUCCESS, downloaded_at=agora,
-                        )
-                        .on_conflict_do_nothing(index_elements=["url_origem"])
-                    )
-                    finish_task_unit(s, job_id)
-                    log.info("Coleta %s identica a %s — nada novo", sigla, dupe.minio_path)
-                    return
+                _registra(s, status_download=DownloadStatus.SEM_DADOS)
+            return
 
-            nome = f"{sigla.lower()}-{agora:%Y-%m-%d_%H%M%S}.csv"
-            path = f"{config.MINIO_BUCKET}/{sigla.lower()}/{agora:%Y}/{nome}"
-            minio = storage.ensure_bucket()
-            minio.put_object(
-                config.MINIO_BUCKET, path.split("/", 1)[1], tmp,
-                length=size, content_type="text/csv",
-            )
-            if config.LOCAL_EXPORT_DIR:
-                try:
-                    _export_local(tmp, path)
-                except OSError:
-                    log.exception("Falha ao exportar %s para o host", path)
-            drive.upload_file(tmp, path.split("/", 1)[1], "text/csv")
+        digest, size = _sha_e_tamanho(tmp)
 
-            with SessionLocal() as s:
-                s.execute(
-                    pg_insert(Documento)
-                    .values(
-                        secretaria_id=secretaria_id, job_id=job_id, url_origem=url_origem,
-                        hash_sha256=digest, minio_path=path, tamanho_bytes=size,
-                        magic_byte_valido=True, status_download=DownloadStatus.SUCCESS,
-                        downloaded_at=agora,
-                    )
-                    .on_conflict_do_nothing(index_elements=["url_origem"])
+        with SessionLocal() as s:
+            dupe = s.execute(
+                select(Documento).where(Documento.hash_sha256 == digest)
+            ).scalar_one_or_none()
+            if dupe and dupe.secretaria_id == secretaria_id:
+                _registra(
+                    s, minio_path=dupe.minio_path, tamanho_bytes=size,
+                    status_download=DownloadStatus.SUCCESS, downloaded_at=agora,
                 )
-                finish_task_unit(s, job_id)
-            log.info("Coleta %s ok: %d registros, %d colunas -> s3://%s", sigla, total, len(colunas), path)
+                log.info("Coleta %s identica a %s — nada novo", sigla, dupe.minio_path)
+                return
+
+        nome = f"{sigla.lower()}-{agora:%Y-%m-%d_%H%M%S}.csv"
+        path = f"{config.MINIO_BUCKET}/{sigla.lower()}/{agora:%Y}/{nome}"
+        _publica_arquivo(tmp, path, size, "text/csv")
+
+        fechar = dict(
+            minio_path=path, tamanho_bytes=size, magic_byte_valido=True,
+            status_download=DownloadStatus.SUCCESS, downloaded_at=agora,
+        )
+        with SessionLocal() as s:
+            try:
+                # dupe de OUTRA fonte: copia propria nesta pasta, sem o hash (UNIQUE)
+                _registra(s, hash_sha256=None if dupe else digest, **fechar)
+            except IntegrityError:
+                s.rollback()
+                _registra(s, hash_sha256=None, **fechar)
+        log.info("Coleta %s ok: %d registros, %d colunas -> s3://%s", sigla, total, n_colunas, path)
 
 
 def requeue_dead_letters(limit: int = 100) -> int:

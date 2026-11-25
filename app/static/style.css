@@ -145,7 +145,7 @@ td.nowrap { white-space: nowrap; }
 .badge.RUNNING, .badge.PENDING { background: #d2992233; color: var(--yellow); }
 .badge.COMPLETED, .badge.SUCCESS { background: #3fb95033; color: var(--green); }
 .badge.FAILED { background: #f8514933; color: var(--red); }
-.badge.CANCELLED { background: #8b949e33; color: var(--muted, #8b949e); }
+.badge.CANCELLED, .badge.SEM_DADOS { background: #8b949e33; color: var(--muted, #8b949e); }
 
 .inline-form { display: flex; gap: 8px; margin-top: 12px; }
 input, select {

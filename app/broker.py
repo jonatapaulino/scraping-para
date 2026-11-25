@@ -47,7 +47,9 @@ def send_to_dead(payload: dict, reason: str) -> bool:
         )
         conn.close()
         return True
-    except pika.exceptions.AMQPError:
+    except (pika.exceptions.AMQPError, OSError):
+        # OSError: DNS/socket (ex.: container do rabbitmq parado -> gaierror).
+        # Sem isso o on_failure quebrava antes de fechar o documento/job.
         log.exception("Falha ao publicar na DLX")
         return False
 
@@ -64,6 +66,6 @@ def queue_depths() -> dict:
             except pika.exceptions.ChannelClosedByBroker:
                 ch = conn.channel()
         conn.close()
-    except pika.exceptions.AMQPError:
+    except (pika.exceptions.AMQPError, OSError):
         log.exception("Falha ao consultar profundidade das filas")
     return depths

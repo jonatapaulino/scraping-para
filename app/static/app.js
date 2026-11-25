@@ -4,11 +4,16 @@ let secretariasCache = [];
 let secsLoaded = false, folhaOpcoesLoaded = false;
 
 const $ = (id) => document.getElementById(id);
+// Escapa texto vindo de fora (URLs e nomes raspados, rótulos das APIs) antes de
+// entrar em innerHTML — sem isso um link malicioso numa página raspada virava
+// código rodando dentro do painel.
+const esc = (t) =>
+  String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtDate = (s) => (s ? new Date(s).toLocaleString("pt-BR") : "—");
 const fmtBytes = (n) =>
   n == null ? "—" : n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? (n / 1e3).toFixed(1) + " KB" : n + " B";
-const ROTULOS = { RUNNING: "Em andamento", COMPLETED: "Concluído", FAILED: "Falhou", CANCELLED: "Cancelado", SUCCESS: "Sucesso", PENDING: "Pendente" };
-const badge = (st) => `<span class="badge ${st}">${ROTULOS[st] || st}</span>`;
+const ROTULOS = { RUNNING: "Em andamento", COMPLETED: "Concluído", FAILED: "Falhou", CANCELLED: "Cancelado", SUCCESS: "Sucesso", PENDING: "Pendente", SEM_DADOS: "Sem dados" };
+const badge = (st) => `<span class="badge ${esc(st)}">${esc(ROTULOS[st] || st)}</span>`;
 const barra = (pct, feito) =>
   `<div class="barra-linha"><div class="bar"><div class="bar-fill${feito ? " done" : ""}" style="width:${pct}%"></div></div><span class="bar-pct">${pct}%</span></div>`;
 
@@ -109,9 +114,9 @@ async function loadSecretarias() {
     ? secretariasCache
         .map(
           (s) =>
-            `<label title="${s.tipo === 'crawl' || s.tipo === 'coleta' ? s.url_base : (s.sigla === 'IOEPA' ? 'Diário Oficial do Estado — escolha os anos ao lado' : 'fonte de API — use a seção Folha')}"><input type="checkbox" value="${s.sigla}" ${
+            `<label title="${esc(s.tipo === 'crawl' || s.tipo === 'coleta' ? s.url_base : (s.sigla === 'IOEPA' ? 'Diário Oficial do Estado — escolha os anos ao lado' : 'fonte de API — use a seção Folha'))}"><input type="checkbox" value="${esc(s.sigla)}" ${
               s.is_ativa && (s.tipo === "crawl" || s.tipo === "coleta" || s.sigla === "IOEPA") ? "" : "disabled"
-            }> ${s.sigla}${s.is_ativa ? "" : " (inativa)"}${s.tipo === "crawl" ? "" : s.tipo === "coleta" ? " (coleta)" : s.sigla === "IOEPA" ? " (Diário Oficial)" : " (API)"}</label>`
+            }> ${esc(s.sigla)}${s.is_ativa ? "" : " (inativa)"}${s.tipo === "crawl" ? "" : s.tipo === "coleta" ? " (coleta)" : s.sigla === "IOEPA" ? " (Diário Oficial)" : " (API)"}</label>`
         )
         .join("")
     : '<span class="empty">nenhuma cadastrada</span>';
@@ -119,31 +124,31 @@ async function loadSecretarias() {
     ? secretariasCache
         .map(
           (s) =>
-            `<tr class="${s.is_ativa ? "" : "inativa"}"><td class="nowrap"><b>${s.sigla}</b></td>` +
+            `<tr class="${s.is_ativa ? "" : "inativa"}"><td class="nowrap"><b>${esc(s.sigla)}</b></td>` +
             `<td class="c nowrap"><span class="badge ${s.tipo === "crawl" ? "PORTAL" : s.tipo === "coleta" ? "COLETA" : "API"}" title="${
               s.tipo === "crawl" ? "Portal: baixa os PDFs do site" : s.tipo === "coleta" ? "Coleta: API ou tabela, gera CSV"
               : s.sigla === "IOEPA" ? "Diário Oficial do Estado" : "Fonte de API (dados abertos)"
             }">${s.tipo === "crawl" ? "Portal" : s.tipo === "coleta" ? "Coleta" : s.sigla === "IOEPA" ? "Diário" : "API"}</span></td>` +
-            `<td class="url" title="${s.url_base}">${s.url_base}${
-              s.tipo === "crawl" ? ` <button class="mini" data-url-id="${s.id}" data-url="${s.url_base}" title="Editar URL">✎</button>`
+            `<td class="url" title="${esc(s.url_base)}">${esc(s.url_base)}${
+              s.tipo === "crawl" ? ` <button class="mini" data-url-id="${esc(s.id)}" data-url="${esc(s.url_base)}" title="Editar URL">✎</button>`
               : s.tipo === "coleta" ? ` <button class="mini" data-coleta-id="${s.id}" title="Editar a configuração desta fonte (abre o formulário acima)">✎ config</button>` : ""
             }</td>` +
             `<td class="c nowrap">${s.tipo === "crawl" ? `${rotuloProfundidade(s.max_depth)} <button class="mini" data-depth-id="${s.id}" data-depth="${s.max_depth ?? ""}" title="Editar profundidade">✎</button>` : '<span class="muted">—</span>'}</td>` +
             `<td class="c nowrap">${
               s.tipo === "coleta" ? "CSV" : s.tipo !== "crawl" ? '<span class="muted">—</span>' :
-              `${s.pdf_filtro === null ? "padrão" : s.pdf_filtro === "" ? "todos" : `<code title="${s.pdf_filtro.replace(/"/g, "&quot;")}">regex</code>`} <button class="mini" data-filtro-id="${s.id}" data-filtro="${(s.pdf_filtro ?? "").replace(/"/g, "&quot;")}" data-filtro-null="${s.pdf_filtro === null}" title="Editar filtro de PDFs">✎</button>`
+              `${s.pdf_filtro === null ? "padrão" : s.pdf_filtro === "" ? "todos" : `<code title="${esc(s.pdf_filtro)}">regex</code>`} <button class="mini" data-filtro-id="${esc(s.id)}" data-filtro="${esc(s.pdf_filtro ?? "")}" data-filtro-null="${s.pdf_filtro === null}" title="Editar filtro de PDFs">✎</button>`
             }</td>` +
             `<td class="nowrap">${
               s.tipo === "crawl" || s.tipo === "coleta" || s.sigla === "IOEPA"
                 ? `<input type="checkbox" data-agenda-id="${s.id}" ${s.agendada ? "checked" : ""} title="Raspar todo dia"> ` +
-                  `<input type="time" data-hora-id="${s.id}" value="${s.agenda_hora || "06:00"}" ${s.agendada ? "" : "disabled"} style="width:6.5rem">`
+                  `<input type="time" data-hora-id="${s.id}" value="${esc(s.agenda_hora || "06:00")}" ${s.agendada ? "" : "disabled"} style="width:6.5rem">`
                 : '<span class="muted">—</span>'
             }</td>` +
             `<td class="c nowrap"><span class="badge ${s.is_ativa ? "COMPLETED" : "CANCELLED"}">${s.is_ativa ? "Ativa" : "Inativa"}</span></td>` +
             `<td class="nowrap"><button class="mini" data-toggle-id="${s.id}" data-ativa="${s.is_ativa}">${
               s.is_ativa ? "desativar" : "reativar"
             }</button>${
-              s.tipo === "crawl" || s.tipo === "coleta" ? ` <button class="mini" data-del-id="${s.id}" data-sigla="${s.sigla}" title="Excluir fonte e histórico (os arquivos baixados ficam)">excluir</button>` : ""
+              s.tipo === "crawl" || s.tipo === "coleta" ? ` <button class="mini" data-del-id="${s.id}" data-sigla="${esc(s.sigla)}" title="Excluir fonte e histórico (os arquivos baixados ficam)">excluir</button>` : ""
             }</td></tr>`
         )
         .join("")
@@ -152,7 +157,7 @@ async function loadSecretarias() {
   const cur = sel.value;
   sel.innerHTML =
     '<option value="">Todas secretarias</option>' +
-    secretariasCache.map((s) => `<option value="${s.id}">${s.sigla}</option>`).join("");
+    secretariasCache.map((s) => `<option value="${esc(s.id)}">${esc(s.sigla)}</option>`).join("");
   sel.value = cur;
   secsLoaded = true;
 }
@@ -337,8 +342,6 @@ function editarColeta(id) {
   $("col-form").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
-const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-
 $("col-testar").addEventListener("click", async () => {
   if (!$("col-url").value.trim()) return toast("Informe a URL", true);
   $("col-testar").disabled = true;
@@ -414,8 +417,8 @@ async function loadJobs() {
         .map(
           (j) =>
             `<tr><td class="mono" title="${j.job_id}">${j.job_id.slice(0, 8)}…</td>` +
-            `<td class="nowrap">${j.secretaria}</td><td class="nowrap">${badge(j.status)}</td>` +
-            `<td>${j.pdfs_descobertos > 0 ? barra(Math.min(100, Math.round(((j.pdfs_baixados_sucesso + j.pdfs_falhas) * 100) / j.pdfs_descobertos)), j.status === "COMPLETED") : "–"}</td>` +
+            `<td class="nowrap">${esc(j.secretaria)}</td><td class="nowrap">${badge(j.status)}</td>` +
+            `<td>${j.pdfs_descobertos > 0 ? barra(Math.min(100, Math.round(((j.pdfs_baixados_sucesso + j.pdfs_falhas + (j.sem_dados || 0)) * 100) / j.pdfs_descobertos)), j.status === "COMPLETED") : "–"}</td>` +
             `<td>${j.pdfs_descobertos}</td><td>${j.pdfs_baixados_sucesso}</td>` +
             `<td>${j.pdfs_falhas}</td><td class="mono">${fmtDate(j.started_at)}</td>` +
             `<td class="nowrap">${
@@ -491,11 +494,10 @@ function montaOrgaos(base, doDataset) {
   const marcados = new Set(
     [...document.querySelectorAll("#folha-orgaos-checks input:checked")].map((c) => c.dataset.chave)
   );
-  const aspas = (t) => String(t || "").replace(/"/g, "&quot;");
   const item = (valor, rotulo, titulo, disponivel, marcado) =>
-    `<label class="${disponivel ? "" : "indisp"}" title="${aspas(titulo)}">` +
-    `<input type="checkbox" data-chave="${aspas(rotulo)}" value="${aspas(valor)}" ` +
-    `${disponivel ? "" : 'disabled data-indisp="1"'} ${marcado ? "checked" : ""}> ${rotulo}</label>`;
+    `<label class="${disponivel ? "" : "indisp"}" title="${esc(titulo)}">` +
+    `<input type="checkbox" data-chave="${esc(rotulo)}" value="${esc(valor)}" ` +
+    `${disponivel ? "" : 'disabled data-indisp="1"'} ${marcado ? "checked" : ""}> ${esc(rotulo)}</label>`;
   const usados = new Set();
   // a lista base escreve "Nome do órgão-SIGLA": compara também sem o final "-SIGLA"
   const nomeSemSigla = (m) => {
@@ -535,7 +537,7 @@ async function loadFolhaOpcoes() {
       .map((p) => {
         const mes = p.mes ?? 1;
         const rotulo = p.mes ? `${p.ano}-${String(mes).padStart(2, "0")}` : `${p.ano}`;
-        return `<option value="${p.ano}-${mes}">${rotulo}</option>`;
+        return `<option value="${esc(p.ano)}-${esc(mes)}">${esc(rotulo)}</option>`;
       })
       .join("");
     $("folha-de").innerHTML = snapshot ? '<option value="2025-1">—</option>' : opts;
@@ -631,14 +633,14 @@ async function loadDocuments() {
     ? d.items
         .map(
           (i) =>
-            `<tr><td class="url" title="${i.url_origem}">${i.url_origem}</td>` +
+            `<tr><td class="url" title="${esc(i.url_origem)}">${esc(i.url_origem)}</td>` +
             `<td class="nowrap">${badge(i.status_download)}</td>` +
             `<td>${i.magic_byte_valido === null ? "—" : i.magic_byte_valido ? "✅" : "❌"}</td>` +
             `<td>${fmtBytes(i.tamanho_bytes)}</td>` +
-            `<td class="mono" title="${i.hash_sha256 || ""}">${i.hash_sha256 ? i.hash_sha256.slice(0, 10) + "…" : "—"}</td>` +
+            `<td class="mono" title="${esc(i.hash_sha256)}">${i.hash_sha256 ? esc(i.hash_sha256.slice(0, 10)) + "…" : "—"}</td>` +
             `<td class="mono">${
               i.minio_path
-                ? `<a href="${API}/documents/${i.id}/file" target="_blank" title="${i.minio_path}">${i.minio_path}</a> <a class="mini" href="${API}/documents/${i.id}/file?download=true" title="Baixar arquivo">⬇</a>`
+                ? `<a href="${API}/documents/${esc(i.id)}/file" target="_blank" rel="noopener" title="${esc(i.minio_path)}">${esc(i.minio_path)}</a> <a class="mini" href="${API}/documents/${esc(i.id)}/file?download=true" title="Baixar arquivo">⬇</a>`
                 : "—"
             }</td>` +
             `<td class="mono">${fmtDate(i.created_at)}</td></tr>`
@@ -698,7 +700,7 @@ async function loadProgressoTarefas() {
       .map((t) => {
         const feito = t.situacao === "COMPLETED";
         const falhou = t.situacao === "FAILED";
-        const falhas = t.falhas ? ` · ${t.falhas} falha(s)` : "";
+        const falhas = (t.falhas ? ` · ${t.falhas} falha(s)` : "") + (t.sem_dados ? ` · ${t.sem_dados} sem dados` : "");
         const quando = fmtHora(t.concluida_em);
         const texto = feito
           ? `✓ Download concluído${quando ? " em " + quando : ""} — ${t.texto}${falhas}`
@@ -706,12 +708,12 @@ async function loadProgressoTarefas() {
             ? `✗ Interrompida${quando ? " em " + quando : ""} — ${t.texto}${falhas}`
             : `${t.texto}${falhas}`;
         const fechar = t.situacao === "RUNNING"
-          ? `<button class="mini" data-cancel="${t.job_id}" title="Interrompe a tarefa">cancelar</button>`
-          : `<button class="mini" data-dispensar="${t.job_id}" title="Remover da lista">×</button>`;
+          ? `<button class="mini" data-cancel="${esc(t.job_id)}" title="Interrompe a tarefa">cancelar</button>`
+          : `<button class="mini" data-dispensar="${esc(t.job_id)}" title="Remover da lista">×</button>`;
         const pct = feito && t.percentual == null ? 100 : t.percentual;
-        return `<div class="prog-item"><div class="prog-resumo"><span><b>${t.fonte}</b> <span class="hint">${t.descricao}</span></span>` +
+        return `<div class="prog-item"><div class="prog-resumo"><span><b>${esc(t.fonte)}</b> <span class="hint">${esc(t.descricao)}</span></span>` +
           `<span class="nowrap">${badge(t.situacao)} ${fechar}</span></div>` +
-          `${pct == null ? "" : barra(pct, feito)}<div class="hint">${texto}</div></div>`;
+          `${pct == null ? "" : barra(Number(pct) || 0, feito)}<div class="hint">${esc(texto)}</div></div>`;
       })
       .join("");
   } catch (err) {
@@ -749,4 +751,9 @@ function refreshAll() {
 
 loadSecretarias().catch(() => {}).then(refreshAll);
 loadFolhaOpcoes();
-setInterval(() => { if ($("autorefresh").checked) refreshAll(); }, 5000);
+// aba em segundo plano nao consulta (cada aba aberta multiplicava a carga);
+// ao voltar para a aba, atualiza na hora
+setInterval(() => { if ($("autorefresh").checked && !document.hidden) refreshAll(); }, 5000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && $("autorefresh").checked) refreshAll();
+});
