@@ -4,6 +4,7 @@
 #  Merge na main -> qualidade + testes -> semantic-release (versao pelos commits, tag vX.Y.Z,
 #                   Release com notas) -> imagem publicada em ghcr.io com a versao
 #  Tag vX.Y.Z    -> (feita a mao, ex.: a primeira) publica a imagem daquela versao
+#  Manual        -> Actions > CI/CD > Run workflow, com "versao": republica a imagem daquela versao
 #
 # Nada aqui acessa o servidor: quem atualiza la escolhe a versao (deploy/atualizar.sh).
 name: CI/CD
@@ -14,6 +15,11 @@ on:
     branches: [main]
     tags: ["v*.*.*"]
   workflow_dispatch:
+    inputs:
+      versao:
+        description: "Republicar a imagem de uma versao ja lancada (ex.: 1.1.0). Vazio = so testar."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -158,7 +164,8 @@ jobs:
     if: >
       always() && needs.qualidade.result == 'success' && needs.testes.result == 'success' &&
       ((github.ref == 'refs/heads/main' && needs.release.outputs.versao != '') ||
-       startsWith(github.ref, 'refs/tags/v'))
+       startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && inputs.versao != ''))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -170,8 +177,11 @@ jobs:
       - name: Versao
         id: v
         run: |
-          if [ -n "${{ needs.release.outputs.versao }}" ]; then V="${{ needs.release.outputs.versao }}"
+          if [ -n "${{ inputs.versao }}" ]; then V="${{ inputs.versao }}"
+          elif [ -n "${{ needs.release.outputs.versao }}" ]; then V="${{ needs.release.outputs.versao }}"
           else V="${GITHUB_REF_NAME#v}"; fi
+          V="${V#v}"
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::versao invalida: $V"; exit 1; }
           echo "versao=$V" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
@@ -212,7 +222,8 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
       - name: Varredura de vulnerabilidades (informativa)
-        uses: aquasecurity/trivy-action@0.28.0
+        # fixada pelo SHA do commit (tag v0.36.0): imune a troca de conteudo de tag
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGEM }}:${{ steps.v.outputs.versao }}
           severity: CRITICAL,HIGH
