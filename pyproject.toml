@@ -1,0 +1,11 @@
+# Configuracao das ferramentas de qualidade usadas no CI
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["app", "tests", "ferramentas"]
+
+[tool.ruff.lint]
+# E9 = erros de sintaxe/execucao; F = pyflakes (nomes indefinidos, imports
+# sem uso, variaveis nao usadas, redefinicoes...). Pega bug real sem brigar
+# com o estilo do codigo.
+select = ["E9", "F"]
