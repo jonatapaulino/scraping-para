@@ -36,9 +36,9 @@ BROWSERLESS_TOKEN=<token qualquer>
 DOWNLOADS_DIR=/caminho/no/host/jonata/scraper-downloads
 ```
 
-Subir:
+Subir (imagem publicada pelo CI; troque por `--build` para montar localmente):
 ```bash
-docker compose up -d --build
+./deploy/atualizar.sh
 curl -s localhost:8000/health    # {"status":"ok", ...}
 ```
 
@@ -47,8 +47,15 @@ O painel fica em `http://127.0.0.1:8000/ui` **na própria máquina**. Ele **não
 - ou deixar a porta 8000 acessível a partir do container SSH dele, que então acessa por túnel SSH (`ssh -L 8000:<host>:8000 ...`).
 
 ## Operação
+- **Versão**: cada versão publicada tem uma Release no GitHub (com o que mudou) e uma imagem `ghcr.io/jonatapaulino/scraping-para:X.Y.Z`. A versão em uso aparece no topo do painel e no `/health`.
+- **Atualizar** (na pasta do projeto):
+  ```bash
+  ./deploy/atualizar.sh          # última versão publicada
+  ./deploy/atualizar.sh 1.5.0    # versão específica (também para voltar atrás)
+  ```
+  O script só **baixa**: a imagem do ghcr.io e o compose da tag. Ele confere o `/health` e, se a versão nova não ficar saudável em ~2 min, **volta sozinho** para a anterior. Nada é exposto: não há webhook, Watchtower nem acesso de fora.
+- **Primeira vez com o script**: `git pull` para trazê-lo, depois `./deploy/atualizar.sh`.
 - **Reinício**: todos os serviços usam `restart: unless-stopped` e voltam sozinhos depois de um reboot.
-- **Atualizar**: `git pull && docker compose up -d --build`.
 - **Logs**: `docker compose logs -f api worker-download`.
 - **Parar**: `docker compose down`. Os dados ficam nos volumes `postgres-data`/`rabbitmq-data` e na pasta `DOWNLOADS_DIR`.
 

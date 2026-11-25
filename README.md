@@ -1,5 +1,9 @@
 # Scraper Gov-PA
 
+[![CI/CD](https://github.com/jonatapaulino/scraping-para/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/jonatapaulino/scraping-para/actions/workflows/ci-cd.yml) [![Release](https://img.shields.io/github/v/release/jonatapaulino/scraping-para?label=vers%C3%A3o)](https://github.com/jonatapaulino/scraping-para/releases)
+
+> Versões, testes e publicação são automáticos (GitHub Actions + semantic-release): veja [`FLUXO-DE-MUDANCA.md`](FLUXO-DE-MUDANCA.md). Instalação e atualização no servidor: [`INSTALAR-NO-SERVIDOR.md`](INSTALAR-NO-SERVIDOR.md).
+
 Malha de web scraping distribuída, orientada a eventos, para extrair documentos (PDFs) de portais governamentais do Estado do Pará.
 
 Você cadastra secretarias, dispara raspagens (manual ou agendada) e os PDFs caem automaticamente em `downloads/<sigla>/<ano>/` — além de ficarem versionados no MinIO com deduplicação por SHA-256.
