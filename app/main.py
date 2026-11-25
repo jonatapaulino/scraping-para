@@ -68,7 +68,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Scraper Gov-PA", version=config.APP_VERSION, lifespan=lifespan)
+app = FastAPI(title="Coletor de Dados Públicos", version=config.APP_VERSION, lifespan=lifespan)
 app.include_router(router)
 add_pagination(app)
 

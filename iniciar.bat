@@ -5,7 +5,7 @@ if not exist .env (
   copy .env.example .env >nul
 )
 echo ==========================================
-echo   Scraper Gov-PA - subindo o sistema
+echo   Coletor de Dados Publicos - subindo o sistema
 echo ==========================================
 docker compose up -d
 if errorlevel 1 (

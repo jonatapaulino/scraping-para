@@ -1,4 +1,4 @@
-# Blueprint da Arquitetura: Scraper Governamental Distribuído
+# Blueprint da Arquitetura: Coletor Distribuído de Dados Públicos
 Padrão Arquitetural: Orientado a Eventos (Event-Driven) e Microsserviços.
 Estratégia de Deploy: Containerização (Docker) em ambiente Linux.
 
