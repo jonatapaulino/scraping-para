@@ -96,7 +96,7 @@ Marque a caixa da fonte e escolha o horário (Brasília). **Nada roda sozinho se
 | Tarefa com 0 PDFs | filtro de PDFs → `*` (veja seção 1) |
 | **Testar** deu erro | leia a mensagem: costuma ser URL errada, "não é JSON" (use *tabela*) ou caminho inexistente |
 | Tarefa travada | **cancelar** e rodar de novo |
-| Falhas na lista | *Fila de erros → reprocessar* (itens **Sem dados** não são falha: o órgão não publicou nada) |
+| Falhas na lista | card **Falhas → ver e resolver**: mostra o motivo de cada uma. **↻ Tentar de novo o que dá** refaz o que pode dar certo (vira uma tarefa com barra em "Coleta agora"); **🗑 Descartar links quebrados** tira da lista o que não tem jeito. Itens **Sem dados** não são falha: o órgão não publicou nada |
 | Coleta: "Endereço interno bloqueado" | a URL aponta para o próprio computador/sistema — por segurança isso não é permitido |
 | Mudou o site e parou de achar PDFs | aumente a **profundidade** ou ajuste o **filtro** |
 

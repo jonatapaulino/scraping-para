@@ -25,7 +25,7 @@ _ADDITIVE_COLUMNS = {
         ("agendada_em", "TIMESTAMP WITH TIME ZONE"),
     ],
     "scraping_job": [("tipo", "VARCHAR(32) DEFAULT 'crawl'")],
-    "documento": [("downloaded_at", "TIMESTAMP WITH TIME ZONE")],
+    "documento": [("downloaded_at", "TIMESTAMP WITH TIME ZONE"), ("erro", "TEXT")],
 }
 
 
@@ -82,7 +82,8 @@ def _migrate() -> None:
     models.Base.metadata.create_all(engine)
     # Valores novos nos enums nativos do Postgres (create_all nao altera tipos
     # existentes). ADD VALUE nao roda dentro de transacao em versoes antigas -> AUTOCOMMIT.
-    for tipo, valor in (("jobstatus", "CANCELLED"), ("downloadstatus", "SEM_DADOS")):
+    for tipo, valor in (("jobstatus", "CANCELLED"), ("downloadstatus", "SEM_DADOS"),
+                        ("downloadstatus", "DESCARTADO")):
         try:
             with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
                 conn.execute(text(f"ALTER TYPE {tipo} ADD VALUE IF NOT EXISTS '{valor}'"))

@@ -2,6 +2,8 @@ import os
 
 # Versao do sistema: vem da imagem publicada pelo CI (tag vX.Y.Z); 'dev' fora dela
 APP_VERSION = os.getenv("APP_VERSION", "dev")
+# repositorio de onde sai a versao publicada (aviso de "versao nova" no painel)
+GITHUB_REPO = os.getenv("GITHUB_REPO", "jonatapaulino/scraping-para")
 
 
 def _int(name: str, default: int) -> int:

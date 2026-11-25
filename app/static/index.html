@@ -62,7 +62,7 @@
       <span class="card-label">Falhas</span>
       <span class="card-value" id="docs-fail">–</span>
       <span class="card-sub" id="falhas-detalhe"></span>
-      <button id="btn-requeue" class="mini" title="Tenta de novo as partes que esgotaram as tentativas automáticas">tentar de novo</button>
+      <button id="btn-falhas" class="mini" title="Mostra o motivo de cada falha e permite tentar de novo ou descartar">ver e resolver</button>
     </div>
   </section>
   <details class="tecnico">
@@ -73,6 +73,22 @@
     <span>Tarefas rodando: <b id="jobs-running">–</b></span>
     <span title="Partes em que o órgão não publicou nada no período (normal, não é erro)">Sem dados: <b id="sem-dados">–</b></span>
   </details>
+
+  <section class="panel" id="falhas-box" hidden>
+    <div class="panel-header">
+      <h2>Falhas</h2>
+      <span class="nowrap">
+        <button id="falhas-refazer" class="primary" title="Tenta de novo tudo o que pode dar certo (links quebrados e arquivos que não são PDF ficam de fora). Vira uma tarefa com barra de progresso.">↻ Tentar de novo o que dá</button>
+        <button id="falhas-descartar-perm" title="Tira da lista os links quebrados e arquivos que não são PDF — não adianta tentar de novo">🗑 Descartar links quebrados</button>
+        <button id="falhas-fechar" class="mini">fechar</button>
+      </span>
+    </div>
+    <p class="hint" id="falhas-resumo"></p>
+    <table>
+      <thead><tr><th>Fonte</th><th>Motivo</th><th style="text-align:right">Qtd</th><th>Exemplo</th><th></th></tr></thead>
+      <tbody id="falhas-tbody"></tbody>
+    </table>
+  </section>
 
   <section class="panel" id="prog-tarefas" hidden>
     <h2>Progresso das tarefas</h2>
@@ -211,7 +227,7 @@
         <select id="f-sec"><option value="">Todas secretarias</option></select>
         <select id="f-status">
           <option value="">Todas as situações</option>
-          <option value="SUCCESS">Sucesso</option><option value="PENDING">Pendente</option><option value="FAILED">Falhou</option><option value="SEM_DADOS">Sem dados</option>
+          <option value="SUCCESS">Sucesso</option><option value="PENDING">Pendente</option><option value="FAILED">Falhou</option><option value="SEM_DADOS">Sem dados</option><option value="DESCARTADO">Descartado</option>
         </select>
       </div>
     </div>

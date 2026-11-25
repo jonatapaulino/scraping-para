@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import paginate
+from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -37,7 +38,8 @@ from app.schemas import (
     SecretariaUpdate,
 )
 from app.tasks import (
-    avancar_fila, requeue_dead_letters, start_coleta_job, start_dataset_job, start_job_for_secretaria,
+    ERROS_PERMANENTES, avancar_fila, descartar_falhas, fonte_do_documento, refazer_falhas,
+    requeue_dead_letters, start_coleta_job, start_dataset_job, start_job_for_secretaria,
 )
 
 log = logging.getLogger(__name__)
@@ -534,6 +536,101 @@ def delete_secretaria(sec_id: uuid.UUID, s: Session = Depends(get_session)):
     return {"excluida": sec.sigla, "documentos_removidos": n_docs}
 
 
+# ---------- falhas: ver, refazer e descartar pelo painel ----------
+
+SEM_MOTIVO = "Sem detalhe (falha anterior ao registro de motivos)"
+
+
+def _nome_fonte(chave: str) -> str:
+    return _DATASET_PT.get(chave, chave)
+
+
+@router.get("/falhas")
+def listar_falhas(s: Session = Depends(get_session)):
+    """Falhas agrupadas por fonte e motivo, com as mais recentes como exemplo."""
+    rows = s.execute(
+        select(Documento.url_origem, Documento.erro, Documento.created_at, Secretaria.sigla)
+        .join(Secretaria, Secretaria.id == Documento.secretaria_id)
+        .where(Documento.status_download == DownloadStatus.FAILED)
+        .order_by(Documento.created_at.desc())
+    ).all()
+    grupos: dict = {}
+    for url, erro, quando, sigla in rows:
+        fonte = fonte_do_documento(url, sigla)
+        motivo = (erro or "")[:90]
+        g = grupos.setdefault((fonte, motivo), {
+            "fonte": fonte, "fonte_nome": _nome_fonte(fonte),
+            "motivo": motivo, "motivo_texto": erro or SEM_MOTIVO,
+            "permanente": bool(erro and erro.startswith(ERROS_PERMANENTES)),
+            "quantidade": 0, "exemplos": [],
+        })
+        g["quantidade"] += 1
+        if len(g["exemplos"]) < 3:
+            g["exemplos"].append({"url": url, "quando": quando.isoformat() if quando else None})
+    lista = sorted(grupos.values(), key=lambda g: (-g["quantidade"], g["fonte_nome"]))
+    permanentes = sum(g["quantidade"] for g in lista if g["permanente"])
+    return {
+        "total": len(rows),
+        "permanentes": permanentes,
+        "refaziveis": len(rows) - permanentes,
+        "grupos": lista,
+    }
+
+
+class FalhasAcao(BaseModel):
+    fonte: Optional[str] = None
+    motivo: Optional[str] = None       # prefixo do motivo do grupo ("" = sem motivo)
+    incluir_permanentes: bool = False  # refazer: tenta ate os links quebrados
+    so_permanentes: bool = False       # descartar: so links quebrados / nao-PDF
+
+
+@router.post("/falhas/refazer")
+def refazer(req: FalhasAcao, s: Session = Depends(get_session)):
+    """Tenta de novo as falhas numa tarefa nova (aparece em 'Coleta agora').
+    A fila de erros tambem e esvaziada: paginas voltam para a fila, documentos
+    entram nesta tarefa."""
+    reenviadas = requeue_dead_letters(limit=100000, pular_documentos=True)
+    job, n, sem_como = refazer_falhas(s, req.fonte, req.motivo, req.incluir_permanentes)
+    return {"job_id": str(job.id) if job else None, "refeitos": n,
+            "sem_como_refazer": sem_como, "paginas_reenviadas": reenviadas}
+
+
+@router.post("/falhas/descartar")
+def descartar(req: FalhasAcao, s: Session = Depends(get_session)):
+    """Tira falhas da lista (nao contam mais e nao sao refeitas)."""
+    n = descartar_falhas(s, req.fonte, req.motivo, req.so_permanentes)
+    return {"descartadas": n}
+
+
+def _ultima_versao() -> dict:
+    import httpx
+
+    r = httpx.get(f"https://api.github.com/repos/{config.GITHUB_REPO}/releases/latest",
+                  timeout=8, headers={"Accept": "application/vnd.github+json"})
+    r.raise_for_status()
+    d = r.json()
+    return {"ultima": d["tag_name"].lstrip("v"), "url": d["html_url"], "publicada_em": d.get("published_at")}
+
+
+def _semver(v: str):
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except ValueError:
+        return None
+
+
+@router.get("/versao")
+def versao():
+    """Versao em uso x ultima publicada no GitHub (consulta guardada por 1 h)."""
+    atual = config.APP_VERSION
+    try:
+        info = _cache_curto("versao:ultima", 3600, _ultima_versao)
+    except Exception:
+        return {"atual": atual, "ultima": None, "nova_disponivel": False}
+    a, u = _semver(atual), _semver(info["ultima"])
+    return {"atual": atual, **info, "nova_disponivel": bool(a and u and u > a)}
+
+
 @router.post("/dead-letters/requeue")
 def requeue_dead(limit: int = 100):
     """Republica mensagens da q.dead na fila original (novo ciclo de retries)."""
@@ -786,6 +883,7 @@ _DATASET_PT = {
     "bens_moveis": "Bens móveis", "bens_imoveis": "Bens imóveis",
     "transf_voluntarias": "Convênios", "licitacoes": "Licitações (convênios)",
     "pncp_contratos": "Contratos PNCP", "diario_oficial": "Diário Oficial (IOEPA)",
+    "refazer": "Nova tentativa das falhas",
 }
 
 
@@ -832,7 +930,7 @@ def progresso_tarefas(s: Session = Depends(get_session)):
         falhas = cont.get(DownloadStatus.FAILED, 0)
         sem_dados = cont.get(DownloadStatus.SEM_DADOS, 0)
         total = max(job.total_pdfs_encontrados or 0, sum(cont.values()))
-        feitos = ok + falhas + sem_dados
+        feitos = ok + falhas + sem_dados + cont.get(DownloadStatus.DESCARTADO, 0)
         rodando = job.status == JobStatus.RUNNING
         t = {
             "job_id": str(job.id),
@@ -846,7 +944,12 @@ def progresso_tarefas(s: Session = Depends(get_session)):
             "iniciada_em": job.started_at.isoformat() if job.started_at else None,
             "concluida_em": job.completed_at.isoformat() if job.completed_at else None,
         }
-        if job.tipo == "crawl":
+        if job.tipo == "refazer":
+            t["fonte"] = _DATASET_PT["refazer"]
+            t["descricao"] = f"{total} item(ns) com falha tentados de novo"
+            t["percentual"] = min(100, round(feitos * 100 / total, 1)) if total else None
+            t["texto"] = f"{feitos} de {total} refeitos" + (f" · {ok} recuperados" if ok else "")
+        elif job.tipo == "crawl":
             t["fonte"] = sigla
             t["descricao"] = "varredura do site (PDFs)"
             t["percentual"] = min(100, round(feitos * 100 / total, 1)) if total else None

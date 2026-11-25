@@ -48,6 +48,9 @@ h1 b { color: var(--accent); }
 }
 .pill.on { color: var(--green); border-color: var(--green); }
 .pill.off { color: var(--red); border-color: var(--red); }
+a.pill.nova { color: var(--yellow); border-color: var(--yellow); text-decoration: none; }
+#falhas-tbody td.url { max-width: 360px; }
+.tag-perm { color: var(--muted); font-size: 11px; }
 
 main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
 
@@ -153,7 +156,7 @@ td.nowrap { white-space: nowrap; }
 .badge.RUNNING, .badge.PENDING { background: #d2992233; color: var(--yellow); }
 .badge.COMPLETED, .badge.SUCCESS { background: #3fb95033; color: var(--green); }
 .badge.FAILED { background: #f8514933; color: var(--red); }
-.badge.CANCELLED, .badge.SEM_DADOS { background: #8b949e33; color: var(--muted, #8b949e); }
+.badge.CANCELLED, .badge.SEM_DADOS, .badge.DESCARTADO { background: #8b949e33; color: var(--muted, #8b949e); }
 
 .inline-form { display: flex; gap: 8px; margin-top: 12px; }
 input, select {

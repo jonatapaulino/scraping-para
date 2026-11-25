@@ -18,7 +18,7 @@ import pika
 from bs4 import BeautifulSoup
 from celery import Task
 from celery.signals import worker_ready
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, OperationalError as SAOperationalError
 from urllib3.exceptions import HTTPError as Urllib3HTTPError
@@ -126,6 +126,8 @@ def _fecha_documento(session, documento_id: uuid.UUID, job_id: uuid.UUID | None,
         .where(Documento.id == documento_id)
         .with_for_update()
     ).scalar_one_or_none()
+    if values.get("status_download") in (DownloadStatus.SUCCESS, DownloadStatus.SEM_DADOS):
+        values.setdefault("erro", None)  # deu certo: apaga o motivo de uma falha antiga
     session.execute(update(Documento).where(Documento.id == documento_id).values(**values))
     if anterior == DownloadStatus.PENDING:
         finish_task_unit(session, job_id)  # faz o commit
@@ -214,6 +216,25 @@ def _enqueue_compensate(session, job_id, enqueue_fn, on_fail):
         finish_task_unit(session, job_id)
 
 
+ERRO_LINK_QUEBRADO = "Link quebrado ou bloqueado"
+ERRO_NAO_PDF = "Não é PDF"
+# motivos que nao adianta tentar de novo (o arquivo nao existe / nao e PDF)
+ERROS_PERMANENTES = (ERRO_LINK_QUEBRADO, ERRO_NAO_PDF)
+
+
+def motivo_legivel(exc: BaseException) -> str:
+    """Motivo de uma falha em portugues, para o painel."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"o site respondeu HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "o site não respondeu a tempo"
+    if isinstance(exc, httpx.ConnectError):
+        return "não consegui conectar ao site"
+    if isinstance(exc, json.JSONDecodeError):
+        return "a API respondeu algo que não é JSON (fora do ar?)"
+    return f"{exc.__class__.__name__}: {str(exc)[:200]}"
+
+
 class DeadLetterTask(Task):
     """Ao esgotar os retries, publica o payload na DLX para analise manual."""
 
@@ -245,6 +266,7 @@ class DeadLetterTask(Task):
                     _fecha_documento(
                         s, uuid.UUID(doc_id), job_id,
                         status_download=DownloadStatus.FAILED,
+                        erro=f"Falhou depois de várias tentativas: {motivo_legivel(exc)}",
                     )
                 elif job_id:
                     finish_task_unit(s, job_id)  # unidade de pagina (sem documento)
@@ -672,7 +694,8 @@ def discover_page(self, payload: dict):
                 lambda u=doc_url: s.execute(
                     update(Documento)
                     .where(Documento.url_origem == u)
-                    .values(status_download=DownloadStatus.FAILED)
+                    .values(status_download=DownloadStatus.FAILED,
+                            erro="Não consegui pôr na fila de download")
                 ),
             )
         for page_url in page_payloads:
@@ -761,7 +784,8 @@ def download_document(self, payload: dict):
             if 400 <= code < 500 and code not in (408, 429):
                 with SessionLocal() as s:
                     _fecha_documento(
-                        s, documento_id, job_id, status_download=DownloadStatus.FAILED
+                        s, documento_id, job_id, status_download=DownloadStatus.FAILED,
+                        erro=f"{ERRO_LINK_QUEBRADO} (HTTP {code})",
                     )
                 log.warning("Download %d terminal (link quebrado): %s", code, url)
                 return
@@ -771,6 +795,7 @@ def download_document(self, payload: dict):
                 _fecha_documento(
                     s, documento_id, job_id,
                     magic_byte_valido=False, status_download=DownloadStatus.FAILED,
+                    erro=f"{ERRO_NAO_PDF} (o link abre outro tipo de arquivo ou uma página)",
                 )
             log.warning("Magic bytes invalidos (nao-PDF): %s", url)
             return
@@ -1073,7 +1098,8 @@ def reconcile_stalled():
             fechado = s.execute(
                 update(Documento)
                 .where(Documento.id == doc_id, Documento.status_download == DownloadStatus.PENDING)
-                .values(status_download=DownloadStatus.FAILED)
+                .values(status_download=DownloadStatus.FAILED,
+                        erro="Tarefa perdida (passou do tempo limite sem terminar)")
                 .returning(Documento.id)
             ).scalar_one_or_none()
             if fechado is None:
@@ -1307,7 +1333,8 @@ def discover_dataset(self, payload: dict):
                 lambda d=doc_id: s.execute(
                     update(Documento)
                     .where(Documento.id == d)
-                    .values(status_download=DownloadStatus.FAILED)
+                    .values(status_download=DownloadStatus.FAILED,
+                            erro="Não consegui pôr na fila de download")
                 ),
             )
 
@@ -1519,7 +1546,7 @@ def coletar_fonte(self, payload: dict):
     def _falha(motivo: str):
         log.warning("Coleta %s falhou: %s", sigla, motivo)
         with SessionLocal() as s:
-            _registra(s, status_download=DownloadStatus.FAILED)
+            _registra(s, status_download=DownloadStatus.FAILED, erro=motivo[:500])
 
     with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES) as tmp:
         try:
@@ -1576,7 +1603,7 @@ def coletar_fonte(self, payload: dict):
         log.info("Coleta %s ok: %d registros, %d colunas -> %s", sigla, total, n_colunas, path)
 
 
-def requeue_dead_letters(limit: int = 100) -> int:
+def requeue_dead_letters(limit: int = 100, pular_documentos: bool = False) -> int:
     """Consome a q.dead e republica na fila original (novo ciclo de retries).
 
     Dead letters so contem o formato {'task', 'payload'} gravado pelo
@@ -1601,6 +1628,10 @@ def requeue_dead_letters(limit: int = 100) -> int:
                 if not isinstance(inner, dict) or "task" not in inner:
                     inner = msg
                 task_name, payload = inner.get("task"), inner.get("payload")
+                if pular_documentos and isinstance(payload, dict) and payload.get("documento_id"):
+                    # o documento ja esta FAILED: refazer_falhas o recoloca numa tarefa nova
+                    ch.basic_ack(delivery_tag=method.delivery_tag)
+                    continue
                 if task_name in DEAD_REQUEUEABLE and isinstance(payload, dict):
                     celery.send_task(task_name, args=[payload])
                     ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -1618,3 +1649,126 @@ def requeue_dead_letters(limit: int = 100) -> int:
     finally:
         conn.close()
     return requeued
+
+
+# ---------- falhas: refazer e descartar pelo painel ----------
+
+
+def _filtro_permanentes():
+    """Documentos cujo motivo NAO e permanente (vale tentar de novo)."""
+    return or_(
+        Documento.erro.is_(None),
+        and_(*[~Documento.erro.startswith(p) for p in ERROS_PERMANENTES]),
+    )
+
+
+def fonte_do_documento(url: str, sigla: str) -> str:
+    """Chave da 'fonte' de uma falha: o dataset (dados abertos) ou a sigla do portal."""
+    if url.startswith("transparencia://"):
+        return url.split("://", 1)[1].split("/", 1)[0]
+    return sigla
+
+
+def recorte_de_url(url: str):
+    """'transparencia://folha/2025/03/SESPA' -> ('folha', {'ano': 2025, 'mes': 3}, 'SESPA').
+    None se a chave nao for reconhecida (formato antigo, dataset removido...)."""
+    if "?" in url or not url.startswith("transparencia://"):
+        return None
+    dataset, _, cauda = url.split("://", 1)[1].partition("/")
+    if dataset not in transparencia.DATASETS or not cauda:
+        return None
+    partes = cauda.split("/")
+    p0 = partes[0]
+    if p0 == "snapshot":
+        recorte, resto = {}, partes[1:]
+    elif re.fullmatch(r"\d{4}-\d{2}_\d{4}-\d{2}", p0):
+        a, b = p0.split("_")
+        recorte = {"ano_ini": int(a[:4]), "mes_ini": int(a[5:]), "ano_fim": int(b[:4]), "mes_fim": int(b[5:])}
+        resto = partes[1:]
+    elif re.fullmatch(r"\d{4}", p0):
+        if len(partes) > 1 and re.fullmatch(r"\d{2}", partes[1]):
+            recorte, resto = {"ano": int(p0), "mes": int(partes[1])}, partes[2:]
+        else:
+            recorte, resto = {"ano": int(p0)}, partes[1:]
+    else:
+        return None
+    return dataset, recorte, ("/".join(resto) or None)
+
+
+def _tarefa_para(doc: Documento):
+    """(nome da task, payload sem job_id) para refazer o documento, ou None."""
+    url = doc.url_origem
+    if url.startswith(("http://", "https://")):
+        return "app.tasks.download_document", {
+            "url": url, "secretaria_id": str(doc.secretaria_id), "documento_id": str(doc.id),
+        }
+    alvo = recorte_de_url(url)
+    if alvo:
+        dataset, recorte, orgao = alvo
+        return "app.tasks.fetch_dataset_mes", {
+            "documento_id": str(doc.id), "dataset": dataset, "recorte": recorte, "orgao": orgao,
+        }
+    return None
+
+
+def _falhas_selecionadas(session, fonte, motivo, incluir_permanentes):
+    q = (
+        select(Documento, Secretaria.sigla)
+        .join(Secretaria, Secretaria.id == Documento.secretaria_id)
+        .where(Documento.status_download == DownloadStatus.FAILED)
+    )
+    if motivo == "":  # falhas antigas, sem motivo gravado
+        q = q.where(Documento.erro.is_(None))
+    elif motivo:
+        q = q.where(Documento.erro.startswith(motivo))
+    elif not incluir_permanentes:
+        q = q.where(_filtro_permanentes())
+    rows = session.execute(q).all()
+    return [(d, sg) for d, sg in rows if not fonte or fonte_do_documento(d.url_origem, sg) == fonte]
+
+
+def refazer_falhas(session, fonte=None, motivo=None, incluir_permanentes=False):
+    """Recoloca falhas numa tarefa NOVA e visivel no painel ('Nova tentativa das
+    falhas', com progresso). Sem filtros: tudo que vale tentar (links quebrados e
+    nao-PDF ficam de fora). Devolve (job ou None, quantos refeitos, quantos sem como refazer)."""
+    itens, sem_como = [], 0
+    for doc, _sg in _falhas_selecionadas(session, fonte, motivo, incluir_permanentes):
+        t = _tarefa_para(doc)
+        if t:
+            itens.append((doc, t))
+        else:
+            sem_como += 1
+    if not itens:
+        return None, 0, sem_como
+    sec = get_or_create_transparencia(session)
+    job = ScrapingJob(secretaria_id=sec.id, status=JobStatus.RUNNING, tipo="refazer",
+                      total_pdfs_encontrados=len(itens))
+    session.add(job)
+    session.flush()
+    session.add(JobPending(job_id=job.id, pending=len(itens)))
+    agora = datetime.now(timezone.utc)
+    for doc, (_task, payload) in itens:
+        payload["job_id"] = str(job.id)
+        doc.status_download, doc.job_id, doc.created_at, doc.erro = DownloadStatus.PENDING, job.id, agora, None
+    session.commit()
+    for doc, (task, payload) in itens:
+        try:
+            celery.send_task(task, args=[payload])
+        except Exception:
+            log.exception("Refazer: falha ao enfileirar %s", doc.url_origem)
+            _fecha_documento(session, doc.id, job.id, status_download=DownloadStatus.FAILED,
+                             erro="Não consegui pôr na fila de download")
+    return job, len(itens), sem_como
+
+
+def descartar_falhas(session, fonte=None, motivo=None, so_permanentes=False) -> int:
+    """Tira falhas da lista: viram DESCARTADO (nao contam e nao sao refeitas). O
+    registro fica, para o crawl nao baixar o mesmo link quebrado todo dia."""
+    selecionadas = _falhas_selecionadas(session, fonte, motivo, incluir_permanentes=True)
+    if so_permanentes:
+        selecionadas = [(d, s) for d, s in selecionadas
+                        if d.erro and d.erro.startswith(ERROS_PERMANENTES)]
+    for doc, _s in selecionadas:
+        doc.status_download = DownloadStatus.DESCARTADO
+    session.commit()
+    return len(selecionadas)
