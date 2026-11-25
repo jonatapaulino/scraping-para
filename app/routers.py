@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import paginate
@@ -348,6 +348,7 @@ def resumo_painel(s: Session = Depends(get_session)):
         guardado = {"arquivos": None, "bytes": None, "livre_bytes": None}
 
     return {
+        "versao": config.APP_VERSION,
         "agora": agora_lista,
         "fila": {
             "total": total_fila,
