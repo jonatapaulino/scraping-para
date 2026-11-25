@@ -621,6 +621,75 @@ $("btn-folha").addEventListener("click", async () => {
   }
 });
 
+// ---------- Fila automática (uma coleta por vez) ----------
+
+const FILA_ROTULO = {
+  AGUARDANDO: ["Na fila", "PENDING"], RODANDO: ["Rodando", "RUNNING"], CONCLUIDA: ["Concluída", "COMPLETED"],
+  FALHOU: ["Falhou", "FAILED"], CANCELADA: ["Cancelada", "CANCELLED"],
+};
+
+async function loadFila() {
+  const itens = await api("/fila");
+  $("fila-box").hidden = !itens.length;
+  let pos = 0;
+  $("fila-tbody").innerHTML = itens
+    .map((i) => {
+      const [rot, cls] = FILA_ROTULO[i.status] || [i.status, ""];
+      const ordem = i.status === "AGUARDANDO" ? `${++pos}º` : "";
+      return `<tr><td class="nowrap">${esc(ordem)}</td><td>${esc(i.nome)}${i.recoletar ? ' <span class="hint">(recoletar)</span>' : ""}</td>` +
+        `<td class="nowrap">${esc(i.periodo)}</td><td>${esc(i.orgaos)}</td>` +
+        `<td class="nowrap"><span class="badge ${cls}" title="${esc(i.erro || "")}">${esc(rot)}</span></td>` +
+        `<td>${i.status === "RODANDO" ? '<span class="hint">veja o progresso no topo</span>'
+          : `<button class="mini" data-fila-del="${esc(i.id)}" title="Tirar da fila">×</button>`}</td></tr>`;
+    })
+    .join("");
+}
+
+$("btn-fila").addEventListener("click", async () => {
+  const todos = $("folha-todos").checked;
+  const orgaos = todos
+    ? null
+    : [...document.querySelectorAll("#folha-orgaos-checks input:checked")].map((c) => c.value);
+  if (!todos && !orgaos.length) return toast("Selecione ao menos um órgão (ou marque todos)", true);
+  const [anoIni, mesIni] = $("folha-de").value.split("-").map(Number);
+  const [anoFim, mesFim] = $("folha-ate").value.split("-").map(Number);
+  $("btn-fila").disabled = true;
+  try {
+    const r = await api("/fila", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        dataset: $("folha-dataset").value,
+        ano_ini: anoIni, mes_ini: mesIni, ano_fim: anoFim, mes_fim: mesFim,
+        orgaos, force: $("folha-force").checked,
+      }),
+    });
+    toast(`${r.adicionados} coleta(s) na fila — rodam uma de cada vez, sozinhas`);
+    loadFila();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    $("btn-fila").disabled = false;
+  }
+});
+
+$("fila-tbody").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-fila-del]");
+  if (!b) return;
+  try {
+    await api(`/fila/${b.dataset.filaDel}`, { method: "DELETE" });
+    loadFila();
+  } catch (err) { toast(err.message, true); }
+});
+
+$("fila-limpar").addEventListener("click", async () => {
+  try {
+    const r = await api("/fila/limpar", { method: "POST" });
+    toast(`${r.removidos} item(ns) removido(s) da lista`);
+    loadFila();
+  } catch (err) { toast(err.message, true); }
+});
+
 // ---------- Documentos ----------
 
 async function loadDocuments() {
@@ -743,6 +812,7 @@ function refreshAll() {
   loadProgressoTarefas();
   loadJobs();
   loadDocuments();
+  loadFila().catch(() => {});
   // self-healing: o que falhar no boot (API ainda subindo) retenta aqui
   // ate conseguir uma vez — depois nao re-entra p/ nao apagar a selecao
   if (!secsLoaded) loadSecretarias().catch(() => {});

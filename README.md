@@ -194,6 +194,7 @@ Datasets disponíveis (`app/transparencia.py` — adicionar um novo = funções 
 Indisponíveis (sem API alcançável — endpoints não respondem): `compras`, `planejamento`.
 
 - **Painel**: seção *Dados abertos* — escolha o dataset, o intervalo e os órgãos (ou todos) e clique *Coletar*
+- **Fila automática**: *➕ Pôr na fila* em vez de *Coletar* — as coletas rodam uma por vez, em ordem, e a próxima começa sozinha quando a anterior termina (`avancar_fila` no `worker-control`, a cada minuto). Falha não trava a fila; sem *recoletar*, partes que já deram certo são puladas e só as que falharam são refeitas. API: `GET/POST /api/v1/fila`, `DELETE /api/v1/fila/{id}`, `POST /api/v1/fila/limpar`
 - **Unidade = um CSV por órgão**: cada órgão selecionado gera um arquivo próprio; "todos" expande para **um CSV por órgão do período**
 - **Saída**: `downloads/<SIGLA>/<dataset>/<recorte>/<dataset>-<recorte>-<SIGLA>.csv` (UTF-8 com BOM) + MinIO — pasta por sigla, igual ao crawl de PDFs
   - a pasta usa a **sigla oficial** (a da API de despesas), sem acento nem espaço: nomes por extenso, siglas de outras APIs e apelidos (`PCPA`, `Casa Civil`, `FSCMP`…) caem na mesma pasta. A tabela `APELIDOS` em `app/transparencia.py` lista as equivalências
@@ -213,6 +214,7 @@ Indisponíveis (sem API alcançável — endpoints não respondem): `compras`, `
 - **Dedup**: URL de origem e SHA-256 únicos — jobs repetidos não baixam de novo
 - **Re-crawl**: páginas deduplicadas expiram após `CRAWL_DEDUP_HOURS` — rodadas agendadas descobrem documentos novos em páginas já conhecidas
 - **Cancelar**: interrompe também os loops longos (PDFs anexos do Diário/PNCP/convênios); documentos que já tinham arquivo continuam como baixados
+- **Sem baixar de novo**: com *recoletar*, o PDF só é baixado se o site informar tamanho/data diferentes (requisição `HEAD`); fonte excluída e recadastrada reaproveita os arquivos já guardados (mesmo tamanho) em vez de duplicar
 - **Retry**: 5 tentativas com backoff `120s × 2ⁿ` (máx. 1h); 4xx é falha terminal; falhas de MinIO/rede também são retriáveis
 - **DLX**: tarefas esgotadas vão para `q.dead` (visível no painel, reprocessável pelo botão *reprocessar*)
 - **Reconciliador**: task periódica do Beat marca documentos `PENDING` órfãos e jobs `RUNNING` zumbis (sem nenhuma atividade há `JOB_STALL_HOURS`) como `FAILED` — coletas longas que seguem trabalhando não são interrompidas

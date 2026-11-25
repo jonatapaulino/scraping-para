@@ -101,6 +101,30 @@ class Documento(Base):
     job: Mapped[ScrapingJob] = relationship(back_populates="documentos")
 
 
+class ColetaFila(Base):
+    """Fila automatica de coletas de dados abertos, montada no painel: o
+    sistema roda UMA por vez, em ordem, e passa para a proxima sozinho quando
+    a anterior termina (worker-control, a cada minuto)."""
+
+    __tablename__ = "coleta_fila"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dataset: Mapped[str] = mapped_column(String(32))
+    ano_ini: Mapped[int] = mapped_column(Integer)
+    mes_ini: Mapped[int] = mapped_column(Integer)
+    ano_fim: Mapped[int] = mapped_column(Integer)
+    mes_fim: Mapped[int] = mapped_column(Integer)
+    orgaos_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # None = todos
+    force: Mapped[bool] = mapped_column(Boolean, default=False)
+    # AGUARDANDO -> RODANDO -> CONCLUIDA | FALHOU | CANCELADA
+    status: Mapped[str] = mapped_column(String(12), default="AGUARDANDO", index=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    erro: Mapped[str | None] = mapped_column(Text, nullable=True)
+    criada_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    iniciada_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    concluida_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 # --- Tabelas internas de infraestrutura (fora do contrato SDD) ---
 
 

@@ -50,6 +50,7 @@ celery.conf.update(
         "app.tasks.reconcile_stalled": {"queue": config.Q_CONTROL},
         "app.tasks.dispatch_datasets_scheduled": {"queue": config.Q_CONTROL},
         "app.tasks.dispatch_agendadas": {"queue": config.Q_CONTROL},
+        "app.tasks.avancar_fila": {"queue": config.Q_CONTROL},
     },
     # sem backend de resultados: sem isso o Beat agenda 'celery.backend_cleanup'
     # na fila padrao 'celery', que nenhum worker consome (mensagem fica presa)
@@ -100,6 +101,12 @@ def _beat_schedule() -> dict:
         "task": "app.tasks.dispatch_agendadas",
         "schedule": crontab(minute="*/5"),
         "options": {"expires": 280},
+    }
+    # fila automatica de coletas (painel): passa para a proxima quando a atual acaba
+    schedule["avancar-fila"] = {
+        "task": "app.tasks.avancar_fila",
+        "schedule": crontab(minute="*"),
+        "options": {"expires": 55},
     }
     reconcile = _cron(config.RECONCILE_CRON)
     if reconcile:

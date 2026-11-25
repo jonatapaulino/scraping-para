@@ -11,6 +11,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qs, unquote, urldefrag, urljoin, urlparse, urlunparse
 
 import httpx
@@ -28,6 +29,7 @@ from app import broker, coleta, config, drive, http_client, storage, transparenc
 from app.celery_app import celery
 from app.database import SessionLocal, init_db
 from app.models import (
+    ColetaFila,
     CrawledPage,
     DeadLetter,
     Documento,
@@ -378,6 +380,98 @@ def _minio_path(sigla: str, url: str) -> str:
     return f"{config.MINIO_BUCKET}/{sigla.lower()}/{year}/{filename}"
 
 
+def _minio_path_antigo(sigla: str, url: str) -> str:
+    """Caminho que a versao ANTERIOR gerava (sem o sufixo da URL) — os arquivos
+    baixados antes da mudanca continuam com esse nome."""
+    filename = _filename_from_url(url)
+    year = "unknown"
+    for part in urlparse(url).path.split("/"):
+        if part.isdigit() and len(part) == 4:
+            year = part
+            break
+    if year == "unknown":
+        m = re.search(r"20\d{2}", filename)
+        if m:
+            year = m.group(0)
+    return f"{config.MINIO_BUCKET}/{sigla.lower()}/{year}/{filename}"
+
+
+def _cabecalho_remoto(url: str) -> tuple[int | None, datetime | None]:
+    """Tamanho e data de modificacao informados pelo site, SEM baixar o arquivo
+    (requisicao HEAD). (None, None) se o site nao informa ou recusa HEAD."""
+    try:
+        with http_client.new_client(timeout=15) as c:
+            resp = c.head(url)
+        if resp.status_code >= 400:
+            return None, None
+        tam = resp.headers.get("content-length")
+        tam = int(tam) if tam and tam.isdigit() else None
+        mod = resp.headers.get("last-modified")
+        try:
+            mod = parsedate_to_datetime(mod) if mod else None
+            if mod is not None and mod.tzinfo is None:
+                mod = mod.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            mod = None
+        return tam, mod
+    except httpx.HTTPError:
+        return None, None
+
+
+def _tamanho_guardado(key: str) -> int | None:
+    try:
+        return storage.client().stat_object(config.MINIO_BUCKET, key.split("/", 1)[1]).size
+    except S3Error:
+        return None
+
+
+def _ja_guardado(url, documento_id, job_id, sigla, caminho_proprio, tam_anterior, baixado_em) -> bool:
+    """Evita baixar de novo um PDF que ja esta guardado. True = resolvido sem download.
+
+    1. Re-download forcado de um doc que ja tem arquivo: se o site informa o
+       MESMO tamanho e uma data de modificacao ANTERIOR ao nosso download, o
+       arquivo nao mudou — so confirma.
+    2. Doc novo no banco (ex.: fonte excluida e cadastrada de novo), mas o
+       arquivo da mesma URL ja esta no armazenamento com o tamanho que o site
+       informa — registra sem baixar.
+    Sem os cabecalhos (site nao informa), baixa normalmente: na duvida, baixa."""
+    if caminho_proprio:
+        if not (tam_anterior and baixado_em):
+            return False
+        tam, mod = _cabecalho_remoto(url)
+        if tam != tam_anterior or mod is None or mod > baixado_em:
+            return False
+        if _tamanho_guardado(caminho_proprio) != tam:
+            return False  # arquivo sumiu do armazenamento: baixa de novo
+        with SessionLocal() as s:
+            _fecha_documento(s, documento_id, job_id, status_download=DownloadStatus.SUCCESS)
+        log.info("Sem mudanca no site (tamanho/data iguais) — nao baixado: %s", url)
+        return True
+
+    # mais barato primeiro: so consulta o site se ja existe algo guardado
+    candidatos = [
+        (k, t) for k in dict.fromkeys((_minio_path(sigla, url), _minio_path_antigo(sigla, url)))
+        if (t := _tamanho_guardado(k)) is not None
+    ]
+    if not candidatos:
+        return False
+    tam, _mod = _cabecalho_remoto(url)
+    if tam is None:
+        return False
+    for key, t in candidatos:
+        if t == tam:
+            with SessionLocal() as s:
+                _fecha_documento(
+                    s, documento_id, job_id,
+                    minio_path=key, tamanho_bytes=tam, magic_byte_valido=True,
+                    status_download=DownloadStatus.SUCCESS,
+                    downloaded_at=datetime.now(timezone.utc),
+                )
+            log.info("Ja estava guardado (%s) — nao baixado: %s", key, url)
+            return True
+    return False
+
+
 def _fallback_url(url: str, base_url: str | None) -> str | None:
     """Mesmo path/query no host-base da secretaria — cobre links que apontam pra intranet."""
     if not base_url:
@@ -662,7 +756,18 @@ def download_document(self, payload: dict):
         # re-download (force) de um doc que ja gravou o proprio arquivo: mantem o
         # caminho. Docs dedup (hash NULL) apontam pro arquivo de OUTRO doc — nao
         # podem reusar o caminho, senao sobrescreveriam o arquivo alheio.
-        caminho_proprio = doc.minio_path if doc.hash_sha256 else None
+        caminho_proprio = (
+            doc.minio_path
+            if doc.minio_path and (doc.hash_sha256 or doc.minio_path == _minio_path(sigla, url))
+            else None
+        )
+        tam_anterior, baixado_em = doc.tamanho_bytes, doc.downloaded_at
+
+    # ---- atalhos: nao baixa de novo o que ja esta guardado ----
+    if _ja_guardado(
+        url, documento_id, job_id, sigla, caminho_proprio, tam_anterior, baixado_em
+    ):
+        return
 
     sha = hashlib.sha256()
     size = 0
@@ -931,6 +1036,63 @@ def dispatch_datasets_scheduled(grupo: str):
     return ok
 
 
+_FIM_DA_FILA = {
+    JobStatus.COMPLETED: "CONCLUIDA",
+    JobStatus.FAILED: "FALHOU",
+    JobStatus.CANCELLED: "CANCELADA",
+}
+
+
+@celery.task
+def avancar_fila():
+    """Beat (a cada minuto) + logo apos o painel enfileirar: roda a fila de
+    coletas UMA por vez. Se a atual terminou, registra o resultado e dispara a
+    proxima. Fica no worker-control (1 processo): nunca duas ao mesmo tempo."""
+    agora = datetime.now(timezone.utc)
+    with SessionLocal() as s:
+        atual = s.execute(
+            select(ColetaFila).where(ColetaFila.status == "RODANDO").order_by(ColetaFila.id).limit(1)
+        ).scalar_one_or_none()
+        if atual is not None:
+            job = s.get(ScrapingJob, atual.job_id) if atual.job_id else None
+            if job is not None and job.status == JobStatus.RUNNING:
+                return "aguardando a coleta atual"
+            atual.status = _FIM_DA_FILA.get(job.status, "FALHOU") if job else "FALHOU"
+            atual.concluida_em = agora
+            s.commit()
+            log.info("Fila: item %d (%s) terminou: %s", atual.id, atual.dataset, atual.status)
+
+        while True:
+            prox = s.execute(
+                select(ColetaFila).where(ColetaFila.status == "AGUARDANDO")
+                .order_by(ColetaFila.id).limit(1)
+            ).scalar_one_or_none()
+            if prox is None:
+                return "fila vazia"
+            orgaos = json.loads(prox.orgaos_json) if prox.orgaos_json else None
+            if transparencia.get_spec(prox.dataset) is None:
+                prox.status, prox.concluida_em = "FALHOU", agora
+                prox.erro = f"dataset desconhecido: {prox.dataset}"
+                s.commit()
+                continue
+            try:
+                job = start_dataset_job(
+                    s, prox.dataset, prox.ano_ini, prox.mes_ini, prox.ano_fim, prox.mes_fim,
+                    orgaos, prox.force,
+                )
+            except Exception as exc:
+                # nao trava a fila: marca este item e tenta o seguinte
+                s.rollback()
+                log.exception("Fila: falha ao iniciar item %d (%s)", prox.id, prox.dataset)
+                prox.status, prox.erro, prox.concluida_em = "FALHOU", str(exc)[:500], agora
+                s.commit()
+                continue
+            prox.status, prox.job_id, prox.iniciada_em = "RODANDO", job.id, agora
+            s.commit()
+            log.info("Fila: item %d (%s) iniciado — job %s", prox.id, prox.dataset, job.id)
+            return f"iniciado {prox.dataset}"
+
+
 @celery.task
 def reconcile_stalled():
     """Fecha as janelas de trabalho orfao que o contador de pending nao cobre:
@@ -1152,11 +1314,17 @@ def discover_dataset(self, payload: dict):
                 .on_conflict_do_nothing(index_elements=["url_origem"])
                 .returning(Documento.id)
             ).scalar_one_or_none()
-            if doc_id is None and force:
+            if doc_id is None:
+                # ja coletada antes: com 'recoletar' refaz tudo; sem ele, refaz SO
+                # o que falhou (antes uma falha antiga ficava pulada para sempre).
+                # SUCCESS e SEM_DADOS continuam pulados.
                 # created_at = agora (ver discover_page): evita o reconciliador
+                refazer = Documento.url_origem == url
+                if not force:
+                    refazer = refazer & (Documento.status_download == DownloadStatus.FAILED)
                 doc_id = s.execute(
                     update(Documento)
-                    .where(Documento.url_origem == url)
+                    .where(refazer)
                     .values(job_id=job_id, status_download=DownloadStatus.PENDING,
                             created_at=func.now())
                     .returning(Documento.id)

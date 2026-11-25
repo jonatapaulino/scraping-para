@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import tempfile
@@ -20,7 +21,7 @@ from sqlalchemy.orm import Session
 from app import coleta, config, storage, transparencia
 from app.database import SessionLocal
 from app.models import (
-    CrawledPage, Documento, DownloadStatus, JobPending, JobStatus, ScrapingJob, Secretaria,
+    ColetaFila, CrawledPage, Documento, DownloadStatus, JobPending, JobStatus, ScrapingJob, Secretaria,
 )
 from app.schemas import (
     DocumentoOut,
@@ -37,7 +38,7 @@ from app.schemas import (
     SecretariaUpdate,
 )
 from app.tasks import (
-    requeue_dead_letters, start_coleta_job, start_dataset_job, start_job_for_secretaria,
+    avancar_fila, requeue_dead_letters, start_coleta_job, start_dataset_job, start_job_for_secretaria,
 )
 
 log = logging.getLogger(__name__)
@@ -563,6 +564,83 @@ def transparencia_start(req: FolhaStartRequest, s: Session = Depends(get_session
         req.orgaos or None, req.force,
     )
     return {"job_id": job.id}
+
+
+# ---------- fila automatica de coletas (uma por vez) ----------
+
+
+@router.get("/fila")
+def listar_fila(s: Session = Depends(get_session)):
+    itens = s.execute(select(ColetaFila).order_by(ColetaFila.id)).scalars().all()
+    out = []
+    for i in itens:
+        orgaos = json.loads(i.orgaos_json) if i.orgaos_json else None
+        out.append({
+            "id": i.id,
+            "dataset": i.dataset,
+            "nome": _DATASET_PT.get(i.dataset, i.dataset),
+            "periodo": (
+                "sem período (inventário atual)"
+                if getattr(transparencia.get_spec(i.dataset), "granularity", "") == "snapshot"
+                else f"{i.ano_ini}-{i.mes_ini:02d} a {i.ano_fim}-{i.mes_fim:02d}"
+            ),
+            "orgaos": "todos" if not orgaos else ", ".join(orgaos[:5]) + (f" +{len(orgaos) - 5}" if len(orgaos) > 5 else ""),
+            "recoletar": i.force,
+            "status": i.status,
+            "job_id": str(i.job_id) if i.job_id else None,
+            "erro": i.erro,
+            "iniciada_em": i.iniciada_em.isoformat() if i.iniciada_em else None,
+            "concluida_em": i.concluida_em.isoformat() if i.concluida_em else None,
+        })
+    return out
+
+
+@router.post("/fila", status_code=status.HTTP_201_CREATED)
+def enfileirar(req: FolhaStartRequest, s: Session = Depends(get_session)):
+    """Poe coletas na fila automatica. dataset '*' = um item por dataset
+    (os mesmos de 'todos os datasets'), executados um depois do outro."""
+    if (req.ano_ini, req.mes_ini) > (req.ano_fim, req.mes_fim):
+        raise HTTPException(400, "Periodo inicial maior que o final")
+    if req.dataset == "*":
+        slugs = [k for k, v in transparencia.DATASETS.items() if v.incluir_em_todos]
+    elif transparencia.get_spec(req.dataset) is not None:
+        slugs = [req.dataset]
+    else:
+        raise HTTPException(400, f"Dataset '{req.dataset}' desconhecido")
+    orgaos = json.dumps(req.orgaos, ensure_ascii=False) if req.orgaos else None
+    for slug in slugs:
+        s.add(ColetaFila(
+            dataset=slug, ano_ini=req.ano_ini, mes_ini=req.mes_ini,
+            ano_fim=req.ano_fim, mes_fim=req.mes_fim, orgaos_json=orgaos, force=req.force,
+        ))
+    s.commit()
+    try:
+        avancar_fila.apply_async()  # comeca ja, sem esperar o proximo minuto
+    except Exception:
+        log.warning("Fila: nao consegui acionar agora — o Beat aciona em ate 1 minuto")
+    return {"adicionados": len(slugs)}
+
+
+@router.delete("/fila/{item_id}")
+def remover_da_fila(item_id: int, s: Session = Depends(get_session)):
+    item = s.get(ColetaFila, item_id)
+    if item is None:
+        raise HTTPException(404, "Item nao encontrado")
+    if item.status == "RODANDO":
+        raise HTTPException(409, "Esta coleta esta rodando — cancele a tarefa no progresso; a fila segue para a proxima")
+    s.delete(item)
+    s.commit()
+    return {"removido": item_id}
+
+
+@router.post("/fila/limpar")
+def limpar_fila(s: Session = Depends(get_session)):
+    """Tira da lista os itens ja terminados (concluidos, com falha ou cancelados)."""
+    n = s.execute(
+        delete(ColetaFila).where(ColetaFila.status.in_(("CONCLUIDA", "FALHOU", "CANCELADA")))
+    ).rowcount
+    s.commit()
+    return {"removidos": n}
 
 
 @router.get("/progresso/diario")

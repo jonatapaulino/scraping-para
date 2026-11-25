@@ -99,10 +99,17 @@
       </div>
       <div class="start-actions">
         <button id="btn-folha" class="primary">Coletar</button>
+        <button id="btn-fila" title="Põe na fila automática: as coletas rodam uma de cada vez, sozinhas, na ordem">➕ Pôr na fila (uma por vez)</button>
         <span class="hint">gera um CSV por mês em downloads/&lt;dataset&gt;/&lt;ano&gt;/&lt;mês&gt;/</span>
       </div>
     </div>
     <div id="folha-result" class="result"></div>
+    <div id="fila-box" hidden>
+      <h3>Fila automática <span class="hint">— roda uma coleta por vez e passa sozinha para a próxima</span>
+        <button id="fila-limpar" class="mini" title="Tira da lista as coletas que já terminaram">limpar terminadas</button></h3>
+      <table><thead><tr><th>#</th><th>Dataset</th><th>Período</th><th>Órgãos</th><th>Situação</th><th></th></tr></thead>
+        <tbody id="fila-tbody"></tbody></table>
+    </div>
   </section>
 
   <section class="panel">
