@@ -142,7 +142,8 @@ docker compose up -d --scale worker-discovery=4 --scale worker-download=8
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `CELERY_BEAT_CRON` | `0 6 * * *` | Agendamento dos jobs automáticos |
+| `BEAT_CRAWL_ENABLED` | `false` | `true` = varre **todos** os portais no horário de `CELERY_BEAT_CRON`. Padrão: só roda sozinho o que tiver **⏰ Agenda diária** marcada no painel |
+| `CELERY_BEAT_CRON` | `0 6 * * *` | Horário da varredura geral (só com `BEAT_CRAWL_ENABLED=true`; UTC) |
 | `DISCOVERY_MAX_DEPTH` | `2` | Profundidade padrão (jobs sem `max_depth`) |
 | `DISCOVERY_DELAY_SECONDS` / `DOWNLOAD_DELAY_SECONDS` | `2` | Rate limit por worker |
 | `MAX_RETRIES` / `RETRY_BASE_SECONDS` | `5` / `120` | Backoff exponencial → DLX |
