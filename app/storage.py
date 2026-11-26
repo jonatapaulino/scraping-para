@@ -67,6 +67,9 @@ def salvar(origem, key: str) -> None:
     try:
         with os.fdopen(fd, "wb") as f:
             shutil.copyfileobj(origem, f, 1024 * 1024)
+        # mkstemp cria com permissao 600 (so o dono le): os arquivos baixados
+        # precisam ser legiveis por quem acessa a pasta (SSH, pagina de arquivos)
+        os.chmod(tmp, 0o644)
         os.replace(tmp, destino)
     except BaseException:
         try:
@@ -81,6 +84,34 @@ def salvar_bytes(dados: bytes, key: str) -> None:
     import io
 
     salvar(io.BytesIO(dados), key)
+
+
+def corrige_permissoes() -> int:
+    """Torna legiveis (644/755) os arquivos e pastas gravados antes da correcao,
+    que ficaram so para o dono (600). A pasta oculta .drive (autorizacao do Google)
+    fica de fora: ela deve continuar restrita. Devolve quantos itens mudaram."""
+    n = 0
+    for dirpath, dirs, files in os.walk(raiz()):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for d in dirs:
+            p = os.path.join(dirpath, d)
+            try:
+                if os.stat(p).st_mode & 0o755 != 0o755:
+                    os.chmod(p, 0o755)
+                    n += 1
+            except OSError:
+                pass
+        for nome in files:
+            if nome.startswith("."):
+                continue
+            p = os.path.join(dirpath, nome)
+            try:
+                if os.stat(p).st_mode & 0o644 != 0o644:
+                    os.chmod(p, 0o644)
+                    n += 1
+            except OSError:
+                pass
+    return n
 
 
 def tamanho(key: str) -> int | None:
