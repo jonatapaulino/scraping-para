@@ -889,7 +889,7 @@ async function loadDocuments() {
                 ? `<a href="${API}/documents/${esc(i.id)}/file" target="_blank" rel="noopener" title="${esc(i.minio_path)}">${esc(i.minio_path)}</a> <a class="mini" href="${API}/documents/${esc(i.id)}/file?download=true" title="Baixar arquivo">⬇</a>`
                 : "—"
             }</td>` +
-            `<td class="mono">${fmtDate(i.created_at)}</td></tr>`
+            `<td class="mono" title="encontrado em ${fmtDate(i.created_at)}">${fmtDate(i.downloaded_at || i.created_at)}</td></tr>`
         )
         .join("")
     : '<tr><td colspan="7" class="empty">sem documentos</td></tr>';

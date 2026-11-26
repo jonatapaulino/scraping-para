@@ -414,7 +414,10 @@ def list_documents(
     status_download: Optional[DownloadStatus] = None,
     s: Session = Depends(get_session),
 ):
-    stmt = select(Documento).order_by(Documento.created_at.desc())
+    # ordem de chegada: quando o arquivo foi baixado (ou, se ainda nao foi, quando foi encontrado)
+    stmt = select(Documento).order_by(
+        func.coalesce(Documento.downloaded_at, Documento.created_at).desc(), Documento.id
+    )
     if secretaria_id:
         stmt = stmt.where(Documento.secretaria_id == secretaria_id)
     if status_download:
