@@ -92,7 +92,10 @@ RECONCILE_CRON = os.getenv("RECONCILE_CRON", "*/30 * * * *")
 # coletas automaticas de dados abertos abaixo.
 # Fuso para o horario das agendas por fonte (Para: UTC-3, sem horario de verao)
 AGENDA_UTC_OFFSET_HORAS = _int("AGENDA_UTC_OFFSET_HORAS", -3)
-BEAT_CRAWL_ENABLED = os.getenv("BEAT_CRAWL_ENABLED", "true").lower() == "true"
+# Varredura diaria de TODOS os portais cadastrados (CELERY_BEAT_CRON). Desligada
+# por padrao: so roda sozinho o que o usuario marcar na coluna "Agenda diaria" do
+# painel. Ligue (true) so se quiser a varredura geral de madrugada.
+BEAT_CRAWL_ENABLED = os.getenv("BEAT_CRAWL_ENABLED", "false").lower() == "true"
 
 # Coleta automatica de datasets (API/PNCP/Diario). Horarios em UTC (BRT = UTC-3).
 AUTO_DATASETS_ENABLED = os.getenv("AUTO_DATASETS_ENABLED", "false").lower() == "true"
