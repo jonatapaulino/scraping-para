@@ -96,13 +96,18 @@ class Explorador(BaseHTTPRequestHandler):
     def _arquivo(self, caminho, baixar):
         tipo = mimetypes.guess_type(caminho)[0] or "application/octet-stream"
         nome = os.path.basename(caminho)
+        try:
+            f = open(caminho, "rb")  # abre ANTES de responder: sem permissao vira aviso, nao arquivo vazio
+        except PermissionError:
+            return self._texto(403, "Sem permissão para ler este arquivo. Atualize o sistema: "
+                                    "as permissões dos arquivos são corrigidas sozinhas ao reiniciar.")
         self.send_response(200)
         self.send_header("Content-Type", tipo)
         self.send_header("Content-Length", str(os.path.getsize(caminho)))
         disp = "attachment" if baixar else "inline"
         self.send_header("Content-Disposition", f"{disp}; filename*=UTF-8''{urllib.parse.quote(nome)}")
         self.end_headers()
-        with open(caminho, "rb") as f:
+        with f:
             shutil.copyfileobj(f, self.wfile, 1024 * 1024)
 
     def _pasta(self, pasta, rel):

@@ -72,6 +72,17 @@ def _on_worker_ready(**_kwargs):
     # da API e gravar um valor novo (ex.: SEM_DADOS) que o banco ainda nao tem
     init_db(attempts=10, delay=3)
     storage.pronto(attempts=5, delay=3)
+    # arquivos de versoes antigas ficaram so para o root: corrige em segundo plano
+    import threading
+
+    def _perm():
+        try:
+            n = storage.corrige_permissoes()
+            if n:
+                log.info("Permissoes corrigidas em %d arquivos/pastas", n)
+        except Exception:
+            log.exception("Falha ao corrigir permissoes")
+    threading.Thread(target=_perm, daemon=True).start()
     conn = broker._connect()
     try:
         broker.declare_topology(conn.channel())

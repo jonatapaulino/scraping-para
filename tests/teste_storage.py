@@ -15,6 +15,16 @@ def check(cond, msg):
 check(storage.pronto(), f"pasta pronta: {storage.raiz()}")
 storage.salvar(io.BytesIO(b"%PDF-1 abc"), "SESPA/folha/2025-01/a.csv")
 check(storage.tamanho("SESPA/folha/2025-01/a.csv") == 10, "salvar + tamanho")
+import os
+import stat
+modo = stat.S_IMODE(os.stat(storage.caminho("SESPA/folha/2025-01/a.csv")).st_mode)
+check(modo == 0o644, f"arquivo gravado legivel por todos (644): {oct(modo)}")
+antigo = storage.caminho("SESPA/antigo.csv"); antigo.write_bytes(b"x"); os.chmod(antigo, 0o600)
+oculto = storage.caminho(".drive/rclone.conf"); oculto.parent.mkdir(exist_ok=True); oculto.write_text("t"); os.chmod(oculto, 0o600)
+storage.corrige_permissoes()
+check(stat.S_IMODE(os.stat(antigo).st_mode) == 0o644, "arquivo antigo (600) corrigido para 644")
+check(stat.S_IMODE(os.stat(oculto).st_mode) == 0o600, "autorizacao do Google (.drive) continua restrita")
+os.remove(antigo)
 check(storage.chave("raw-docs/SESPA/x.pdf") == "SESPA/x.pdf", "chave() tira o prefixo do banco")
 storage.mover("SESPA/folha/2025-01/a.csv", "SESPA/folha/2025-01/b.csv")
 check(not storage.existe("SESPA/folha/2025-01/a.csv") and storage.existe("SESPA/folha/2025-01/b.csv"), "mover")
