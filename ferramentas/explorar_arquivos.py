@@ -83,7 +83,8 @@ class Explorador(BaseHTTPRequestHandler):
             return self._texto(404, "Não encontrado")
         if os.path.isfile(alvo):
             return self._arquivo(alvo, "baixar" in urllib.parse.parse_qs(url.query))
-        return self._pasta(alvo, rel)
+        ordem = (urllib.parse.parse_qs(url.query).get("ordem") or ["data"])[0]
+        return self._pasta(alvo, rel, ordem if ordem in ("data", "nome", "tamanho") else "data")
 
     def _texto(self, cod, msg):
         corpo = msg.encode()
@@ -110,18 +111,24 @@ class Explorador(BaseHTTPRequestHandler):
         with f:
             shutil.copyfileobj(f, self.wfile, 1024 * 1024)
 
-    def _pasta(self, pasta, rel):
+    def _pasta(self, pasta, rel, ordem="data"):
         itens = []
         for e in os.scandir(pasta):
             if e.name.startswith("."):
                 continue
             if e.is_dir(follow_symlinks=False):
                 b, n = resumo(e.path)
-                itens.append((True, e.name, b, n, None))
+                # data da pasta = quando recebeu o ultimo arquivo
+                itens.append((True, e.name, b, n, e.stat().st_mtime))
             elif e.is_file(follow_symlinks=False):
                 st = e.stat()
                 itens.append((False, e.name, st.st_size, 1, st.st_mtime))
-        itens.sort(key=lambda x: (not x[0], -x[2], x[1].lower()))
+        chave = {
+            "data": lambda x: (not x[0], -(x[4] or 0), x[1].lower()),   # mais recentes primeiro
+            "nome": lambda x: (not x[0], x[1].lower()),
+            "tamanho": lambda x: (not x[0], -x[2], x[1].lower()),
+        }[ordem]
+        itens.sort(key=chave)
         total, narq = resumo(pasta)
         livre = shutil.disk_usage(pasta).free
         maior = max((i[2] for i in itens), default=1) or 1
@@ -134,8 +141,11 @@ class Explorador(BaseHTTPRequestHandler):
         linhas = []
         for eh_pasta, nome, b, n, mtime in itens:
             href = "/" + urllib.parse.quote("/".join(partes + [nome])) + ("/" if eh_pasta else "")
+            if eh_pasta and ordem != "data":
+                href += f"?ordem={ordem}"
             icone = "📁" if eh_pasta else "📄"
-            extra = f"{n:,} arquivos".replace(",", ".") if eh_pasta else time.strftime("%d/%m/%Y %H:%M", time.localtime(mtime))
+            quando = time.strftime("%d/%m/%Y %H:%M", time.localtime(mtime)) if mtime else ""
+            extra = (f"{n:,} arquivos".replace(",", ".") + (f" · último em {quando}" if quando else "")) if eh_pasta else quando
             baixar = "" if eh_pasta else f' · <a href="{href}?baixar=1">baixar</a>'
             linhas.append(
                 f'<tr><td>{icone} <a href="{href}">{html.escape(nome)}</a>{baixar}</td>'
@@ -150,6 +160,9 @@ class Explorador(BaseHTTPRequestHandler):
 <div class="card"><span class="mut">Arquivos</span><b>{narq:,}</b></div>
 <div class="card"><span class="mut">Espaço livre no disco</span><b>{tam_legivel(livre)}</b></div></div>
 <div class="trilha">{' / '.join(trilha)}</div>
+<div class="mut" style="margin:-6px 0 10px">ordenar por: {' · '.join(
+    f'<b>{r}</b>' if o == ordem else f'<a href="?ordem={o}">{r}</a>'
+    for o, r in (("data", "mais recentes"), ("nome", "nome"), ("tamanho", "tamanho")))}</div>
 <table><tr><th>Nome</th><th style="text-align:right">Tamanho</th><th></th><th style="text-align:right">Detalhe</th></tr>
 {''.join(linhas) or '<tr><td colspan="4" class="mut">Pasta vazia — nada baixado aqui ainda.</td></tr>'}
 </table><p class="mut">Os totais são recalculados a cada minuto.</p></body></html>""".replace(f"{narq:,}", f"{narq:,}".replace(",", "."))
